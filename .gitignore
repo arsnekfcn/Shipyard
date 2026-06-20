@@ -1,0 +1,12 @@
+# build output
+bin/
+obj/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+
+# local build override (points SeBin64 at this machine's SE install)
+Directory.Build.props

@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <!-- Output DLL is Shipyard.dll so Pulsar lists it as "Shipyard" (namespace stays internal). -->
+    <AssemblyName>Shipyard</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <Configurations>Debug;Release</Configurations>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Path to your Space Engineers Bin64 (for the game assemblies). Override per-machine via an
+         env var / -p:SeBin64=... or a local (gitignored) Directory.Build.props if SE isn't here. -->
+    <SeBin64 Condition="'$(SeBin64)' == ''">C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineers\Bin64</SeBin64>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Publicizer: access private/internal game members directly (compile-time checked) instead of
+         Harmony Traverse reflection. Compile-only (PrivateAssets=all); injects [IgnoresAccessChecksTo]
+         so runtime access to the real, un-publicized game DLLs works. -->
+    <PackageReference Include="Krafs.Publicizer" Version="2.2.1" PrivateAssets="all" />
+    <Publicize Include="Sandbox.Game" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Octokit (GitHub REST client) is VENDORED + EMBEDDED into Shipyard.dll, so we ship a single
+         plugin DLL (Pulsar lists one plugin, not a stray "Octokit"). Private=false: referenced for
+         compile only, NOT copied to output. Plugin.ResolveSibling loads it from the embedded resource. -->
+    <Reference Include="Octokit"><HintPath>libs\Octokit.dll</HintPath><Private>false</Private></Reference>
+    <EmbeddedResource Include="libs\Octokit.dll"><LogicalName>Octokit.dll</LogicalName></EmbeddedResource>
+    <!-- LibGit2Sharp (local git, offline mode) embedded the same way: the MANAGED dll is resolved from
+         the embedded resource by Plugin.ResolveSibling; the NATIVE git2-*.dll can't be embedded-and-loaded
+         in place, so it's embedded and EXTRACTED to %APPDATA%\Shipyard\native on Init (see Plugin.InitLocalGit),
+         with GlobalSettings.NativeLibraryPath pointed at it. Keeps the single-DLL distribution. -->
+    <Reference Include="LibGit2Sharp"><HintPath>libs\LibGit2Sharp.dll</HintPath><Private>false</Private></Reference>
+    <EmbeddedResource Include="libs\LibGit2Sharp.dll"><LogicalName>LibGit2Sharp.dll</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="libs\git2-a418d9d.dll"><LogicalName>git2-a418d9d.dll</LogicalName></EmbeddedResource>
+    <!-- Logo crest embedded so the plugin ships as a single DLL; Plugin.ExtractLogo writes it out on Init. -->
+    <EmbeddedResource Include="assets\logo.png"><LogicalName>logo.png</LogicalName></EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Framework assemblies not auto-referenced in SDK-style net48 projects. -->
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Security" /> <!-- DPAPI: ProtectedData for the stored token -->
+    <Reference Include="System.Net" />
+    <Reference Include="System.Drawing" /> <!-- GDI+: normalize tile thumbnails to a uniform aspect -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="VRage"><HintPath>$(SeBin64)\VRage.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Game"><HintPath>$(SeBin64)\VRage.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(SeBin64)\VRage.Library.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Input"><HintPath>$(SeBin64)\VRage.Input.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(SeBin64)\VRage.Math.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(SeBin64)\VRage.Render.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Common"><HintPath>$(SeBin64)\Sandbox.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Game"><HintPath>$(SeBin64)\Sandbox.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Graphics"><HintPath>$(SeBin64)\Sandbox.Graphics.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SpaceEngineers.Game"><HintPath>$(SeBin64)\SpaceEngineers.Game.dll</HintPath><Private>false</Private></Reference>
+    <!-- Block-level object builders (RemoteControl / AI blocks) for the GPS scrub -->
+    <Reference Include="SpaceEngineers.ObjectBuilders"><HintPath>$(SeBin64)\SpaceEngineers.ObjectBuilders.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>
