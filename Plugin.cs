@@ -80,9 +80,14 @@ namespace ShipyardPlugin
             catch (Exception ex) { Log("ExtractLogo failed: " + ex.Message); }
         }
 
-        // LibGit2Sharp's MANAGED dll loads via ResolveSibling (embedded resource), but its NATIVE
-        // git2-*.dll must be a real file on disk. Extract it to %APPDATA%\Shipyard\native and point
-        // LibGit2Sharp there. Mirrors ExtractLogo.
+        // LibGit2Sharp's NATIVE git2-*.dll must be a real file on disk with GlobalSettings.NativeLibraryPath
+        // pointed at its folder. Two build models supply it differently:
+        //   * LOCAL/manual build: it's EMBEDDED in Shipyard.dll -> extract to %APPDATA%\Shipyard\native.
+        //   * PULSAR build: Pulsar ignores our EmbeddedResource (compiles from source) and instead restores
+        //     LibGit2Sharp.NativeBinaries via NuGet, but does NOT copy the native dll next to the plugin ->
+        //     locate it in Pulsar's NuGet packages folder (see FindNativeGitDir).
+        // Either way, if the native dll can't be found, only OFFLINE (local-git) mode is affected; the
+        // online GitHub path (Octokit) doesn't need it.
         private const string NativeGitDll = "git2-a418d9d.dll";   // tied to LibGit2Sharp 0.30.0
         private static void InitLocalGit()
         {
@@ -90,20 +95,62 @@ namespace ShipyardPlugin
             {
                 string nativeDir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Shipyard", "native");
-                Directory.CreateDirectory(nativeDir);
-                string dest = Path.Combine(nativeDir, NativeGitDll);
                 using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream(NativeGitDll))
                 {
-                    if (s == null) { Log("InitLocalGit: native resource missing"); return; }
-                    byte[] buf = ReadAll(s);
-                    // size-compare so we only rewrite on first run / version bump (the dll may be loaded/locked)
-                    if (!File.Exists(dest) || new FileInfo(dest).Length != buf.Length)
-                        try { File.WriteAllBytes(dest, buf); } catch (Exception ex) { Log("native write skipped: " + ex.Message); }
+                    if (s != null)   // LOCAL/manual build: embedded -> extract
+                    {
+                        Directory.CreateDirectory(nativeDir);
+                        string dest = Path.Combine(nativeDir, NativeGitDll);
+                        byte[] buf = ReadAll(s);
+                        // size-compare so we only rewrite on first run / version bump (the dll may be loaded/locked)
+                        if (!File.Exists(dest) || new FileInfo(dest).Length != buf.Length)
+                            try { File.WriteAllBytes(dest, buf); } catch (Exception ex) { Log("native write skipped: " + ex.Message); }
+                        LibGit2Sharp.GlobalSettings.NativeLibraryPath = nativeDir;
+                        Log("LibGit2Sharp ready (embedded): libgit2 " + LibGit2Sharp.GlobalSettings.Version);
+                        return;
+                    }
                 }
-                LibGit2Sharp.GlobalSettings.NativeLibraryPath = nativeDir;
-                Log("LibGit2Sharp ready: libgit2 " + LibGit2Sharp.GlobalSettings.Version);
+                // PULSAR build: no embedded native dll - find it in Pulsar's restored NuGet packages.
+                string found = FindNativeGitDir();
+                if (found != null)
+                {
+                    LibGit2Sharp.GlobalSettings.NativeLibraryPath = found;
+                    Log("LibGit2Sharp ready (resolved native): " + found + " -> libgit2 " + LibGit2Sharp.GlobalSettings.Version);
+                }
+                else
+                    Log("InitLocalGit: native git2 not found - offline/local-git mode unavailable (online GitHub mode is unaffected)");
             }
             catch (Exception ex) { Log("InitLocalGit failed: " + ex.Message); }
+        }
+
+        // Locate the folder holding a native git2-*.dll (LibGit2Sharp.NativeBinaries) for the Pulsar build,
+        // where it lives under .../runtimes/<rid>/native in Pulsar's NuGet packages cache rather than being
+        // embedded. Probes the narrow NuGet cache first, then broader fallbacks; returns the first match's
+        // directory, or null. Best-effort and one-time (Init); each root is guarded so an inaccessible
+        // subtree just moves on to the next root.
+        private static string FindNativeGitDir()
+        {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string entryDir = null;
+            try { entryDir = Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location ?? ""); } catch { }
+            var roots = new[]
+            {
+                Path.Combine(appData, "Pulsar", "NuGet", "packages"),   // documented Pulsar NuGet cache (narrow)
+                PluginDir,                                              // next to the compiled plugin
+                entryDir,                                               // next to the host (Legacy/Interim) exe
+                Path.Combine(appData, "Pulsar"),                        // broad fallback
+            };
+            foreach (var root in roots)
+            {
+                if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
+                try
+                {
+                    foreach (var f in Directory.EnumerateFiles(root, "git2-*.dll", SearchOption.AllDirectories))
+                        return Path.GetDirectoryName(f);
+                }
+                catch (Exception ex) { Log("native search in " + root + " skipped: " + ex.Message); }
+            }
+            return null;
         }
 
         private static Assembly ResolveSibling(object sender, ResolveEventArgs e)

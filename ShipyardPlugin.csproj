@@ -8,13 +8,19 @@
     <Platforms>x64</Platforms>
     <Configurations>Debug;Release</Configurations>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- LOCAL_BUILD marks the MSBuild/deploy.sh build (vs Pulsar's from-source Roslyn compile, which
+         ignores this csproj). Publicize.cs uses it to avoid colliding with Krafs.Publicizer's injected
+         [IgnoresAccessChecksTo] attribute here, while still supplying that attribute under Pulsar. -->
+    <DefineConstants>$(DefineConstants);LOCAL_BUILD</DefineConstants>
     <!-- Path to your Space Engineers Bin64 (for the game assemblies). Override per-machine via an
          env var / -p:SeBin64=... or a local (gitignored) Directory.Build.props if SE isn't here. -->
     <SeBin64 Condition="'$(SeBin64)' == ''">C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineers\Bin64</SeBin64>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Lib.Harmony" Version="2.3.3" ExcludeAssets="runtime" />
+    <!-- 2.4.2 matches the Harmony (0Harmony) that Pulsar provides at compile + runtime, so our source
+         compiles against the same API under both the local build and Pulsar's from-source compile. -->
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
