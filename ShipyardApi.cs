@@ -629,10 +629,11 @@ namespace ShipyardPlugin
         {
             xml = Regex.Replace(xml, @"<Owner>\d+</Owner>", "<Owner>0</Owner>");
             xml = Regex.Replace(xml, @"<BuiltBy>\d+</BuiltBy>", "<BuiltBy>0</BuiltBy>");
-            // Broad by design (scrub-everything safety stance): this also rewrites ANY 17-digit number
-            // starting 7656119 anywhere in the XML (e.g. inside CustomData/timestamps), not just SteamID
-            // fields. If that ever corrupts legitimate data, anchor it to known SteamID-bearing elements.
-            xml = Regex.Replace(xml, @"7656119\d{10}", "0");
+            // Covers the FULL individual SteamID64 range: the prefix is 7656119 for lower account ids and
+            // rolls over to 7656120 once accountID passes ~1.02B (76561200000000000) - which is the majority
+            // of modern accounts, so 7656119-only silently leaked them. Lookarounds keep it to a standalone
+            // 17-digit id (not a digit run embedded in a larger number/decimal). Replaces the id with "0".
+            xml = Regex.Replace(xml, @"(?<![\d.\-])7656(119|120)\d{10}(?![\d.])", "0");
             // Workshop item ids are PER-USER publish state (see WorkshopPush), not repo data.
             xml = Regex.Replace(xml, @"<WorkshopId>\d+</WorkshopId>", "<WorkshopId>0</WorkshopId>");
             xml = Regex.Replace(xml, @"<WorkshopIds>.*?</WorkshopIds>", "", RegexOptions.Singleline);
