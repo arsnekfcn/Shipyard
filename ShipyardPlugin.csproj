@@ -32,20 +32,24 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Octokit (GitHub REST client) is VENDORED + EMBEDDED into Shipyard.dll, so we ship a single
-         plugin DLL (Pulsar lists one plugin, not a stray "Octokit"). Private=false: referenced for
-         compile only, NOT copied to output. Plugin.ResolveSibling loads it from the embedded resource. -->
-    <Reference Include="Octokit"><HintPath>libs\Octokit.dll</HintPath><Private>false</Private></Reference>
-    <EmbeddedResource Include="libs\Octokit.dll"><LogicalName>Octokit.dll</LogicalName></EmbeddedResource>
-    <!-- LibGit2Sharp (local git, offline mode) embedded the same way: the MANAGED dll is resolved from
-         the embedded resource by Plugin.ResolveSibling; the NATIVE git2-*.dll can't be embedded-and-loaded
-         in place, so it's embedded and EXTRACTED to %APPDATA%\Shipyard\native on Init (see Plugin.InitLocalGit),
-         with GlobalSettings.NativeLibraryPath pointed at it. Keeps the single-DLL distribution. -->
-    <Reference Include="LibGit2Sharp"><HintPath>libs\LibGit2Sharp.dll</HintPath><Private>false</Private></Reference>
-    <EmbeddedResource Include="libs\LibGit2Sharp.dll"><LogicalName>LibGit2Sharp.dll</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="libs\git2-a418d9d.dll"><LogicalName>git2-a418d9d.dll</LogicalName></EmbeddedResource>
+    <!-- Octokit (GitHub REST) + LibGit2Sharp (offline/local-git), restored from NuGet so Pulsar's
+         from-source build resolves them itself. LibGit2Sharp.NativeBinaries (the native git2-*.dll) comes
+         in transitively; its build props set GlobalSettings.NativeLibraryPath automatically under Pulsar. -->
+    <PackageReference Include="Octokit" Version="13.0.1" GeneratePathProperty="true" />
+    <PackageReference Include="LibGit2Sharp" Version="0.30.0" GeneratePathProperty="true" />
     <!-- Logo crest embedded so the plugin ships as a single DLL; Plugin.ExtractLogo writes it out on Init. -->
     <EmbeddedResource Include="assets\logo.png"><LogicalName>logo.png</LogicalName></EmbeddedResource>
+  </ItemGroup>
+
+  <!-- LOCAL single-file build ONLY (deploy.sh): embed the NuGet-restored managed DLLs + native git2 into
+       Shipyard.dll so manual installs stay one self-contained plugin. Sourced from the restored packages
+       (Pkg* path props), NOT a committed libs/ folder. Pulsar (from-source) ignores this csproj entirely,
+       so under Pulsar nothing is embedded and the packages resolve as ordinary NuGet deps. -->
+  <ItemGroup Condition="$(DefineConstants.Contains('LOCAL_BUILD'))">
+    <PackageReference Include="LibGit2Sharp.NativeBinaries" Version="2.0.322" GeneratePathProperty="true" />
+    <EmbeddedResource Include="$(PkgOctokit)\lib\netstandard2.0\Octokit.dll"><LogicalName>Octokit.dll</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="$(PkgLibGit2Sharp)\lib\net472\LibGit2Sharp.dll"><LogicalName>LibGit2Sharp.dll</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="$(PkgLibGit2Sharp_NativeBinaries)\runtimes\win-x64\native\git2-a418d9d.dll"><LogicalName>git2-a418d9d.dll</LogicalName></EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>
