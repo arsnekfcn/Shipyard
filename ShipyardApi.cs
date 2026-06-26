@@ -1162,6 +1162,30 @@ namespace ShipyardPlugin
         // Publish scrubs both back, so install -> publish round-trips stay clean.
         private static byte[] PrepareInstalledBp(byte[] bytes)
         {
+            // Primary: rewrite the TYPED objects (no regex over XML). This copy is only pasted into the
+            // world, never committed, so reserialization here can't affect repo diffs.
+            try
+            {
+                MyObjectBuilder_Definitions defs; ulong sz;
+                if (MyObjectBuilderSerializer.DeserializeXML(bytes, out defs, out sz) && defs.ShipBlueprints != null)
+                {
+                    foreach (var bp in defs.ShipBlueprints)
+                    {
+                        if (!string.IsNullOrEmpty(bp.DisplayName) && !bp.DisplayName.StartsWith("[SY]", StringComparison.Ordinal))
+                            bp.DisplayName = "[SY] " + bp.DisplayName;
+                        if (bp.CubeGrids != null)
+                            foreach (var g in bp.CubeGrids)
+                                if (g.CubeBlocks != null)
+                                    foreach (var b in g.CubeBlocks)
+                                        if (b.Owner == 0) b.Owner = 1;   // non-zero so the game's paste reassigns it to the pasting player
+                    }
+                    using (var ms = new MemoryStream())
+                        if (MyObjectBuilderSerializerKeen.SerializeXML(ms, defs))
+                            return ms.ToArray();
+                }
+            }
+            catch (Exception ex) { Plugin.Log("PrepareInstalledBp structural rewrite failed: " + ex.Message); }
+            // Fallback (un-parseable blueprint): targeted text edits, same effect.
             try
             {
                 string xml = System.Text.Encoding.UTF8.GetString(bytes);
@@ -1172,7 +1196,7 @@ namespace ShipyardPlugin
                 xml = xml.Replace("<Owner>0</Owner>", "<Owner>1</Owner>");
                 return System.Text.Encoding.UTF8.GetBytes(xml);
             }
-            catch (Exception ex) { Plugin.Log("PrepareInstalledBp failed: " + ex.Message); }
+            catch (Exception ex) { Plugin.Log("PrepareInstalledBp text fallback failed: " + ex.Message); }
             return bytes;
         }
 
