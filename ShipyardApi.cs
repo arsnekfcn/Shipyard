@@ -624,21 +624,29 @@ namespace ShipyardPlugin
                 });
         }
 
-        // Ownership/privacy scrub applied to everything we push to the repo (publish + WIP commits):
-        // zero owners/builders, strip SteamID64s, drop the local install-time DisplayName markers.
-        private static string ScrubBp(string xml)
+        // SteamID64 CONTENT scan over the serialized blueprint. Deliberately a text scan, NOT XML-node work:
+        // an individual 17-digit SteamID can appear anywhere — inside CustomData, a PB script body, or mod
+        // storage — none of which are addressable as elements, so XDocument/XmlDocument can't reach them.
+        // Covers the FULL range: prefix 7656119 for lower account ids, rolling to 7656120 once accountID
+        // passes ~1.02B (7656119-only silently leaked the majority of modern accounts). Lookarounds keep it
+        // to a standalone 17-digit id (not a digit run embedded in a larger number/decimal). Block ownership
+        // (<Owner>/<BuiltBy>, themselves SteamID64s) is scrubbed on the typed objects in ScrubGrid, so the
+        // only ids this still catches are the ones buried in free text.
+        private static readonly Regex SteamId64 = new Regex(@"(?<![\d.\-])7656(119|120)\d{10}(?![\d.])", RegexOptions.Compiled);
+        private static string ScrubSteamIds(string xml) => SteamId64.Replace(xml, "0");
+
+        // FALLBACK ONLY: used when a blueprint can't be deserialized into typed objects (corrupt/unknown),
+        // so the object-level scrub can't run. A best-effort TEXT scrub so raw ownership / Workshop ids /
+        // SteamIDs still never leave the machine. The structural element regexes here are intentional for
+        // this un-parseable path; the normal path manipulates the typed object builders instead.
+        private static string ScrubBpTextFallback(string xml)
         {
             xml = Regex.Replace(xml, @"<Owner>\d+</Owner>", "<Owner>0</Owner>");
             xml = Regex.Replace(xml, @"<BuiltBy>\d+</BuiltBy>", "<BuiltBy>0</BuiltBy>");
-            // Covers the FULL individual SteamID64 range: the prefix is 7656119 for lower account ids and
-            // rolls over to 7656120 once accountID passes ~1.02B (76561200000000000) - which is the majority
-            // of modern accounts, so 7656119-only silently leaked them. Lookarounds keep it to a standalone
-            // 17-digit id (not a digit run embedded in a larger number/decimal). Replaces the id with "0".
-            xml = Regex.Replace(xml, @"(?<![\d.\-])7656(119|120)\d{10}(?![\d.])", "0");
-            // Workshop item ids are PER-USER publish state (see WorkshopPush), not repo data.
+            xml = ScrubSteamIds(xml);
             xml = Regex.Replace(xml, @"<WorkshopId>\d+</WorkshopId>", "<WorkshopId>0</WorkshopId>");
             xml = Regex.Replace(xml, @"<WorkshopIds>.*?</WorkshopIds>", "", RegexOptions.Singleline);
-            return xml.Replace("<DisplayName>[SY] ", "<DisplayName>");   // strip the tool's repo-managed marker
+            return xml.Replace("<DisplayName>[SY] ", "<DisplayName>");
         }
 
         // SE GPS tokens embed a world location: "GPS:<name>:<x>:<y>:<z>:<#color>:". Scripts stash these
@@ -681,6 +689,9 @@ namespace ShipyardPlugin
             if (g.CubeBlocks == null) return changed;
             foreach (var b in g.CubeBlocks)
             {
+                // Ownership scrub on the typed block (not via regex over the serialized XML): Owner/BuiltBy
+                // are SteamID64s identifying who built/owns the block.
+                if (b.Owner != 0 || b.BuiltBy != 0) { b.Owner = 0; b.BuiltBy = 0; changed = true; }
                 if (b is MyObjectBuilder_RemoteControl rc)
                 {
                     if (rc.Waypoints != null || rc.Coords != null) changed = true;
@@ -795,15 +806,22 @@ namespace ShipyardPlugin
                     foreach (var bp in defs.ShipBlueprints)
                     {
                         gpsChanged |= ScrubGrids(bp.CubeGrids);
+                        // Workshop ids (per-user publish state, not repo data) + the [SY] install marker:
+                        // scrubbed on the TYPED blueprint object, no regex-over-XML and no whole-file reformat
+                        // (which would wreck Shipyard's version diffs).
                         if (bp.WorkshopId != 0 || bp.WorkshopIds != null) { bp.WorkshopId = 0; bp.WorkshopIds = null; gpsChanged = true; }
+                        if (!string.IsNullOrEmpty(bp.DisplayName) && bp.DisplayName.StartsWith("[SY] ", StringComparison.Ordinal))
+                        { bp.DisplayName = bp.DisplayName.Substring(5); gpsChanged = true; }
                     }
                     using (var ms = new MemoryStream())
                         if (MyObjectBuilderSerializerKeen.SerializeXML(ms, defs))
-                            return ScrubBp(System.Text.Encoding.UTF8.GetString(ms.ToArray()));
+                            // Only the SteamID content scan is left for the serialized text (see ScrubSteamIds).
+                            return ScrubSteamIds(System.Text.Encoding.UTF8.GetString(ms.ToArray()));
                 }
             }
             catch (Exception ex) { Plugin.Log("ScrubBpFile structural scrub failed: " + ex.Message); }
-            return ScrubBp(System.Text.Encoding.UTF8.GetString(bytes));
+            // Deserialize failed -> typed scrub unavailable; best-effort text fallback so nothing leaks.
+            return ScrubBpTextFallback(System.Text.Encoding.UTF8.GetString(bytes));
         }
 
         // Read a file even while another process holds it open. SE keeps local blueprint files
@@ -1778,7 +1796,7 @@ namespace ShipyardPlugin
                         if (!MyObjectBuilderSerializerKeen.SerializeXML(ms, defs)) throw new Exception("Couldn't serialize the captured grid.");
                         xml = System.Text.Encoding.UTF8.GetString(ms.ToArray());
                     }
-                    xml = ScrubBp(xml);
+                    xml = ScrubSteamIds(xml);   // ownership/GPS already scrubbed on the typed grids above
                     LocalSaveShip(cs, System.Text.Encoding.UTF8.GetBytes(xml), null, null, "update: " + cs + " (" + delta + ") offline");
                     Plugin.Log("local commit " + cs + " (" + delta + ")");
                     return "Committed to your local shipyard:\n  " + cs + "\n  " + delta + ".";
@@ -1902,7 +1920,7 @@ namespace ShipyardPlugin
                             throw new Exception("Couldn't serialize the captured grid.");
                         xml = System.Text.Encoding.UTF8.GetString(ms.ToArray());
                     }
-                    xml = ScrubBp(xml);
+                    xml = ScrubSteamIds(xml);   // ownership/GPS already scrubbed on the typed grids above
 
                     // Fire the SLOW bp.sbc upload + the head-commit read concurrently; do the diff (pure
                     // in-memory) while they run, so the upload no longer waits behind reads + a download.
