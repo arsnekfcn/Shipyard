@@ -26,12 +26,12 @@ namespace ShipyardPlugin
             Log("Init: loading");
             ExtractLogo();        // write the embedded logo crest to a file the GUI can load by path
 #if LOCAL_BUILD
-            // Single-file local build only: resolve the embedded Octokit/LibGit2Sharp managed DLLs and
-            // extract the native libgit2. Under Pulsar (from-source) these come from NuGet and resolve
-            // normally, and LibGit2Sharp.NativeBinaries' build props set NativeLibraryPath automatically.
+            // Single-file local build only: the embedded Octokit/LibGit2Sharp managed DLLs need a resolver.
             AppDomain.CurrentDomain.AssemblyResolve += ResolveSibling;
-            InitLocalGit();   // extract the native libgit2 + point LibGit2Sharp at it (offline mode engine)
 #endif
+            // Point LibGit2Sharp at the native git2 (offline-mode engine). Both build models need this:
+            // LOCAL extracts the embedded native; Pulsar (from-source) locates it in Pulsar's NuGet cache.
+            InitLocalGit();
             try
             {
                 _harmony = new Harmony(Id);
@@ -84,18 +84,16 @@ namespace ShipyardPlugin
             catch (Exception ex) { Log("ExtractLogo failed: " + ex.Message); }
         }
 
-#if LOCAL_BUILD
         // LibGit2Sharp's NATIVE git2-*.dll must be a real file on disk with GlobalSettings.NativeLibraryPath
-        // pointed at its folder. The single-file local build embeds it in Shipyard.dll, so extract it to
-        // %APPDATA%\Shipyard\native and point LibGit2Sharp there. (Under Pulsar the LibGit2Sharp.NativeBinaries
-        // NuGet package's build props set NativeLibraryPath automatically, so none of this is compiled in.)
-        // If the native dll can't be loaded, only OFFLINE (local-git) mode is affected; the online GitHub
-        // path (Octokit) doesn't need it.
-        private const string NativeGitDll = "git2-a418d9d.dll";   // tied to LibGit2Sharp 0.30.0
+        // pointed at its folder. The two build models supply it differently (see the branches below). If it
+        // can't be located, only OFFLINE (local-git) mode is affected; the online GitHub path (Octokit) is fine.
+        private const string NativeGitDll = "git2-a418d9d.dll";   // tied to LibGit2Sharp 0.30.0 / NativeBinaries 2.0.322
         private static void InitLocalGit()
         {
             try
             {
+#if LOCAL_BUILD
+                // LOCAL single-file build: the native git2 is EMBEDDED -> extract to %APPDATA%\Shipyard\native.
                 string nativeDir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Shipyard", "native");
                 using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream(NativeGitDll))
@@ -110,10 +108,74 @@ namespace ShipyardPlugin
                     LibGit2Sharp.GlobalSettings.NativeLibraryPath = nativeDir;
                     Log("LibGit2Sharp ready (embedded): libgit2 " + LibGit2Sharp.GlobalSettings.Version);
                 }
+#else
+                // PULSAR from-source build: LibGit2Sharp.NativeBinaries is restored via NuGet, but Pulsar does
+                // NOT copy the native git2 next to the plugin nor set NativeLibraryPath (its build props don't
+                // run for the Roslyn-from-source compile) -> locate it in Pulsar's NuGet cache and point there.
+                string found = FindNativeGitDir();
+                if (found != null)
+                {
+                    LibGit2Sharp.GlobalSettings.NativeLibraryPath = found;
+                    Log("LibGit2Sharp ready (resolved native): " + found + " -> libgit2 " + LibGit2Sharp.GlobalSettings.Version);
+                }
+                else
+                    Log("InitLocalGit: native git2 not found - offline/local-git mode unavailable (online GitHub mode is unaffected)");
+#endif
             }
             catch (Exception ex) { Log("InitLocalGit failed: " + ex.Message); }
         }
 
+#if !LOCAL_BUILD
+        private const string NativeBinariesPkg = "LibGit2Sharp.NativeBinaries";
+        private const string NativeBinariesVer = "2.0.322";   // transitive of LibGit2Sharp 0.30.0
+        // Locate the folder with the native git2-*.dll for the Pulsar build. Pulsar restores it into its OWN
+        // NuGet cache (portable install: <PulsarRoot>\Legacy\NuGet\packages\<Pkg>.<Ver>\runtimes\<rid>\native),
+        // not next to the plugin and not via GlobalSettings auto-resolution. Probe the known package layouts
+        // first (fast, exact), then a bounded recursive sweep of small roots; always prefer the process RID.
+        private static string FindNativeGitDir()
+        {
+            string rid = Environment.Is64BitProcess ? "win-x64" : "win-x86";
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string entryDir = null;
+            try { entryDir = Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location ?? ""); } catch { }
+
+            var pkgRoots = new[]
+            {
+                entryDir != null ? Path.Combine(entryDir, "Legacy", "NuGet", "packages") : null,  // portable Pulsar (SE1/Legacy)
+                entryDir != null ? Path.Combine(entryDir, "NuGet", "packages") : null,
+                Path.Combine(appData, "Pulsar", "NuGet", "packages"),                              // non-portable Pulsar
+                Path.Combine(userProfile, ".nuget", "packages"),                                   // global NuGet cache
+            };
+            foreach (var root in pkgRoots)
+            {
+                if (string.IsNullOrEmpty(root)) continue;
+                foreach (var pkgDir in new[]
+                {
+                    Path.Combine(root, NativeBinariesPkg + "." + NativeBinariesVer),               // Pulsar layout: Pkg.Ver
+                    Path.Combine(root, NativeBinariesPkg.ToLowerInvariant(), NativeBinariesVer),   // global NuGet: pkg/ver
+                })
+                {
+                    string dir = Path.Combine(pkgDir, "runtimes", rid, "native");
+                    try { if (File.Exists(Path.Combine(dir, NativeGitDll))) return dir; } catch { }
+                }
+            }
+            // Bounded fallback: recurse the small, likely roots only (never the huge global cache).
+            foreach (var root in new[] { entryDir, PluginDir })
+            {
+                if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
+                try
+                {
+                    foreach (var f in Directory.EnumerateFiles(root, NativeGitDll, SearchOption.AllDirectories))
+                        if (f.IndexOf(rid, StringComparison.OrdinalIgnoreCase) >= 0) return Path.GetDirectoryName(f);
+                }
+                catch (Exception ex) { Log("native sweep in " + root + " skipped: " + ex.Message); }
+            }
+            return null;
+        }
+#endif
+
+#if LOCAL_BUILD
         private static Assembly ResolveSibling(object sender, ResolveEventArgs e)
         {
             try

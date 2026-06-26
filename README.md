@@ -82,14 +82,15 @@ The skin is cosmetic; the tool is "Shipyard".
 ## Architecture / file map
 
 Single C# project (`net48`), namespace `ShipyardPlugin`, output **`Shipyard.dll`**
-(so Pulsar lists it as "Shipyard"). **Octokit and LibGit2Sharp (managed + native
-`git2-*.dll`) are vendored (`libs/`) and EMBEDDED** as resources into `Shipyard.dll`. One
-self-contained plugin. The native libgit2 self-extracts to
-`%APPDATA%\Shipyard\native\` on first run.
+(so Pulsar lists it as "Shipyard"). **Octokit and LibGit2Sharp are NuGet `PackageReference`s** —
+Pulsar's marketplace build compiles from source and restores them from NuGet (no binary DLLs are
+committed to the repo). For the local `deploy.sh` build only, they're embedded into the single
+`Shipyard.dll` (managed DLLs + native `git2-*.dll`) behind the `LOCAL_BUILD` constant, sourced from
+the NuGet restore; that build's native libgit2 self-extracts to `%APPDATA%\Shipyard\native\` on first run.
 
 | File | Responsibility |
 |---|---|
-| `Plugin.cs` | `IPlugin` entry point. Harmony patch-all; `AssemblyResolve` loads embedded Octokit/LibGit2Sharp; native-libgit2 + logo extraction; `Update()` drives chat commands, hotkey, Ctrl+Shift+D, and `HighlightManager.Draw`. |
+| `Plugin.cs` | `IPlugin` entry point. Harmony patch-all; under `LOCAL_BUILD`, `AssemblyResolve` loads the embedded Octokit/LibGit2Sharp + extracts native libgit2 (the marketplace build resolves these from NuGet instead); logo extraction; `Update()` drives chat commands, hotkey, Ctrl+Shift+D, and `HighlightManager.Draw`. |
 | `Auth.cs` | Per-user config (`%APPDATA%\Shipyard\config.json`) + DPAPI token (`token.dat`). Online repo + client id, mode/local-repo/author, and all highlight/diff prefs. |
 | `ShipyardApi.cs` | **Core (online).** Octokit calls: sign-in, repo save/init, collaborators/invites, fetch ships+PRs, publish, checkout/commit/PR/release, install/spawn/project, visual diff, compare/merge/approve/close/delete, privacy scrub. `ShipEntry`/`PrEntry`/`ManageData` models. |
 | `ShipyardApi.Offline.cs` | **Core (offline).** `partial class ShipyardApi`: local-git backend (init/read/save/commit/install/publish/delete) via LibGit2Sharp. |
