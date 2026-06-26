@@ -16,6 +16,13 @@
 // Under Pulsar, LOCAL_BUILD is undefined (the csproj is ignored), so this file is the one that counts.
 // ---------------------------------------------------------------------------------------------------
 #if !LOCAL_BUILD
+// Mirror the csproj's <Publicize Include="Sandbox.Game" />: grant the compiler access to private/internal
+// Sandbox.Game members (the F10 blueprint screen's private fields, etc.).
+// CS1730: assembly-level attributes must precede every type/namespace declaration in the file, so the
+// [assembly:] usage goes ABOVE the attribute-class definition below (Pulsar's from-source Roslyn compile
+// enforces this strictly — and it must compile for Pulsar to publicize Sandbox.Game).
+[assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("Sandbox.Game")]
+
 namespace System.Runtime.CompilerServices
 {
     [System.AttributeUsage(System.AttributeTargets.Assembly, AllowMultiple = true)]
@@ -25,8 +32,4 @@ namespace System.Runtime.CompilerServices
         public string AssemblyName { get; }
     }
 }
-
-// Mirror the csproj's <Publicize Include="Sandbox.Game" />: grant the compiler access to private/internal
-// Sandbox.Game members (the F10 blueprint screen's private fields, etc.).
-[assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("Sandbox.Game")]
 #endif
