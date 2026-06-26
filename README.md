@@ -57,8 +57,9 @@ The skin is cosmetic; the tool is "Shipyard".
   **per user**, so pushing again **updates the same item in place** instead of creating a
   duplicate. On success it opens the item's page in the **in-game Steam overlay**.
 - **Privacy scrub on every upload / commit:** grid rebased to origin; owner / BuiltBy /
-  SteamID / WorkshopId zeroed; autopilot/script waypoints cleared; **GPS coordinates scrubbed**
-  (including inside CustomData / mod storage). Best effort, embedded GPS in scripts not touched.
+  SteamID / OwnerSteamId / WorkshopId zeroed; remote-control + **AI-block** (autopilot / recorder /
+  defensive-combat) waypoints & coordinates cleared; **GPS coordinates scrubbed** inside CustomData /
+  mod storage / **LCD & text-surface panels**. Best effort; **programmable-block scripts are NOT touched**.
 - **Visual diff** (`HighlightManager`): non-destructive wireframe boxes on changed blocks.
   **Defaults: GREEN added, RED removed, ORANGE replaced (type swap), CYAN repainted, MAGENTA
   custom-data changed.** Plus a floating label on whatever changed block you look at. Aim at
