@@ -324,7 +324,8 @@ namespace ShipyardPlugin
             catch (Exception ex)
             {
                 Plugin.Log("WriteToken: encrypted persist failed (" + ex.Message + "); token kept for this session only.");
-                try { if (File.Exists(TokenPath)) File.Delete(TokenPath); } catch { }   // no stale/garbage token file
+                try { if (File.Exists(TokenPath)) File.Delete(TokenPath); }   // best-effort: leave no stale/garbage token file
+                catch (Exception ex2) { Plugin.Log("WriteToken: stale token cleanup failed: " + ex2.Message); }
             }
         }
 

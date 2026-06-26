@@ -102,9 +102,9 @@ namespace ShipyardPlugin
             if (h == null) return;
             InvokeOnMain(() =>
             {
-                try { h.Screen?.CloseScreen(false); } catch (Exception ex) { Plugin.Log("CloseBox failed: " + ex.Message); }
-                try { h.Note?.Hide(); } catch { }
-                try { if (h.Menu) ShipyardScreen.SetStatus(""); } catch { }
+                try { h.Screen?.CloseScreen(false); } catch (Exception ex) { Plugin.Log("CloseBox: CloseScreen failed: " + ex.Message); }
+                try { h.Note?.Hide(); } catch (Exception ex) { Plugin.Log("CloseBox: Note.Hide failed: " + ex.Message); }
+                try { if (h.Menu) ShipyardScreen.SetStatus(""); } catch (Exception ex) { Plugin.Log("CloseBox: SetStatus failed: " + ex.Message); }
             });
         }
 

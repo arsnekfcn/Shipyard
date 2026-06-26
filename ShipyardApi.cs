@@ -557,7 +557,8 @@ namespace ShipyardPlugin
                 () =>
                 {
                     string msg = op();
-                    try { Thread.Sleep(GitHubSettleMs); } catch { }   // let GitHub settle before re-fetching
+                    try { Thread.Sleep(GitHubSettleMs); }   // let GitHub settle before re-fetching
+                    catch (ThreadInterruptedException) { }   // an interrupt just means proceed to the re-fetch now
                     ShipyardData data = null;
                     try { data = FetchAll(); }
                     catch (Exception ex) { Plugin.Log("post-op refresh failed: " + ex.Message); }
@@ -746,7 +747,7 @@ namespace ShipyardPlugin
                     }
                 }
             }
-            catch { }
+            catch { }   // best-effort read of a block's mod-storage entry; absent/unreadable -> null (caller handles)
             return null;
         }
 
@@ -1169,7 +1170,8 @@ namespace ShipyardPlugin
         private static byte[] CachedBlobBytes(GitHubClient client, string sha)
         {
             string fp = Path.Combine(BlobCacheDir(), sha + ".bin");
-            try { if (File.Exists(fp)) return File.ReadAllBytes(fp); } catch { }
+            try { if (File.Exists(fp)) return File.ReadAllBytes(fp); }
+            catch { }   // cache read is best-effort: on any error fall through and fetch the blob fresh below
             byte[] data = BlobBytes(client.Git.Blob.Get(Auth.RepoOwner, Auth.RepoName, sha).GetAwaiter().GetResult());
             try { Directory.CreateDirectory(BlobCacheDir()); File.WriteAllBytes(fp, data); }
             catch (Exception ex) { Plugin.Log("blob cache write failed: " + ex.Message); }
@@ -1517,7 +1519,8 @@ namespace ShipyardPlugin
         private static void StampOwnership(MyObjectBuilder_CubeGrid[] grids)
         {
             long id = 0;
-            try { id = MyAPIGateway.Session?.Player?.IdentityId ?? 0; } catch { }
+            try { id = MyAPIGateway.Session?.Player?.IdentityId ?? 0; }
+            catch { }   // no local identity available -> id stays 0 and we return below (nothing to stamp)
             if (id == 0) return;
             foreach (var g in grids)
                 if (g.CubeBlocks != null)
@@ -1861,7 +1864,7 @@ namespace ShipyardPlugin
                     var client = Gh();
                     string owner = Auth.RepoOwner, repo = Auth.RepoName, branch = CheckoutBranch(cs);
                     string login = Auth.Login;   // stored at sign-in; no User.Current round-trip
-                    if (string.IsNullOrEmpty(login)) { try { login = client.User.Current().GetAwaiter().GetResult().Login; } catch { } }
+                    if (string.IsNullOrEmpty(login)) { try { login = client.User.Current().GetAwaiter().GetResult().Login; } catch (Exception ex) { Plugin.Log("login lookup (User.Current) failed: " + ex.Message); } }
 
                     Reference branchRef;
                     try { branchRef = client.Git.Reference.Get(owner, repo, "heads/" + branch).GetAwaiter().GetResult(); }
@@ -2180,7 +2183,7 @@ namespace ShipyardPlugin
         {
             var client = Gh();
             string me = Auth.Login;   // we store the login at sign-in; no need for a User.Current round-trip
-            if (string.IsNullOrEmpty(me)) { try { me = client.User.Current().GetAwaiter().GetResult().Login; } catch { } }
+            if (string.IsNullOrEmpty(me)) { try { me = client.User.Current().GetAwaiter().GetResult().Login; } catch (Exception ex) { Plugin.Log("login lookup (User.Current) failed: " + ex.Message); } }
             if (owners == null) owners = ReadCodeowners(client);
             var prs = client.PullRequest.GetAllForRepository(Auth.RepoOwner, Auth.RepoName).GetAwaiter().GetResult();
 
@@ -2590,7 +2593,7 @@ namespace ShipyardPlugin
                     {
                         MyCubeBlockDefinition def = null;
                         try { def = MyDefinitionManager.Static.GetCubeBlockDefinition(new MyDefinitionId(b.TypeId, b.SubtypeId)); }
-                        catch { }
+                        catch { }   // unknown/modded block id -> def stays null and is counted as 'unknown' below
                         if (def == null) { unknown++; continue; }
                         massKg += def.Mass;
                         if (def is MyThrustDefinition th)

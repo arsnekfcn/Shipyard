@@ -16,7 +16,11 @@ namespace ShipyardPlugin
         // side effect is explicit at the call site (Explain is a pure formatter). Repo config + Client ID kept.
         public static void WipeIfExpired(Exception ex)
         {
-            if (Unwrap(ex) is AuthorizationException) { try { Auth.SignOut(); } catch { } }
+            if (Unwrap(ex) is AuthorizationException)
+            {
+                try { Auth.SignOut(); }
+                catch (Exception sx) { Plugin.Log("WipeIfExpired: SignOut failed: " + sx.Message); }
+            }
         }
 
         public static string Explain(Exception ex)
@@ -97,6 +101,8 @@ namespace ShipyardPlugin
                     if (!string.IsNullOrEmpty(e.Message)) return e.Message;
                 }
             }
+            // This is itself a best-effort error-message formatter: if digging into the validation payload
+            // throws, just fall back to the raw exception message (logging here would be circular noise).
             catch { }
             return ave.Message;
         }

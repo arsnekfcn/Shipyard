@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using HarmonyLib;
@@ -133,10 +134,24 @@ namespace ShipyardPlugin
 
         public void Update()
         {
-            try { ChatCommands.Tick(); } catch { /* never spam the sim loop */ }
-            try { TryHotkey(); } catch { /* never spam the sim loop */ }
-            try { TryDataDiffKey(); } catch { /* never spam the sim loop */ }
-            try { HighlightManager.Draw(); } catch { /* never spam the sim loop */ }
+            Tick(ChatCommands.Tick, "chat-commands");
+            Tick(TryHotkey, "hotkey");
+            Tick(TryDataDiffKey, "data-diff-key");
+            Tick(HighlightManager.Draw, "highlight-draw");
+        }
+
+        // Per-frame work must never throw out of the sim loop, but swallowing silently hides real bugs.
+        // Run each step guarded and log only the FIRST failure per (step, message) so a recurring fault
+        // is recorded once instead of spamming a line every frame.
+        private static readonly HashSet<string> _loggedTickErrors = new HashSet<string>();
+        private static void Tick(Action step, string what)
+        {
+            try { step(); }
+            catch (Exception ex)
+            {
+                if (_loggedTickErrors.Add(what + "|" + ex.Message))
+                    Log("Update." + what + " failed (logged once): " + ex);
+            }
         }
 
         // Ctrl+Shift+D while diff highlights are up: open the line-by-line settings/custom-data
@@ -148,7 +163,7 @@ namespace ShipyardPlugin
             if (inp == null || !inp.IsAnyCtrlKeyPressed() || !inp.IsAnyShiftKeyPressed() || !inp.IsNewKeyPressed(MyKeys.D)) return;
             string label, oldD, newD;
             if (!HighlightManager.TryGetLookedAtData(out label, out oldD, out newD))
-            { try { MyAPIGateway.Utilities?.ShowNotification("Aim at a MAGENTA '± data' box, then press Ctrl+Shift+D.", 4000); } catch { } return; }
+            { try { MyAPIGateway.Utilities?.ShowNotification("Aim at a MAGENTA '± data' box, then press Ctrl+Shift+D.", 4000); } catch (Exception ex) { Log("data-diff hint notification failed: " + ex.Message); } return; }
             Sandbox.Graphics.GUI.MyGuiSandbox.AddScreen(new TextDiffScreen(label, oldD, newD));
         }
 
@@ -193,7 +208,7 @@ namespace ShipyardPlugin
                         if (key == MyKeys.B)
                         {
                             Log("hotkey: '" + spec + "' uses B, which SE reserves for blueprints - migrating to " + DefaultHotkeyLine);
-                            try { File.WriteAllText(path, DefaultHotkeyLine + HotkeyComment()); } catch { }
+                            try { File.WriteAllText(path, DefaultHotkeyLine + HotkeyComment()); } catch (Exception ex) { Log("hotkey rewrite (B->default) failed: " + ex.Message); }
                         }
                         // Alt can't be gated with the input API we use. Honoring "Alt+X" as bare "X"
                         // would surprise the user, so reject the spec and keep the default instead.
@@ -222,6 +237,9 @@ namespace ShipyardPlugin
             if (_hkCooldown > 0) { _hkCooldown--; return; }
             if (_hkKey == MyKeys.None || MyAPIGateway.Session == null) return;
             // Don't fire while the player is typing in chat (a modifier-less hotkey would trigger mid-sentence).
+            // Deliberately swallowed and NOT logged: this runs every frame, so a logged failure would spam the
+            // log; the read is only a best-effort guard and the exact modifier checks below still gate the
+            // hotkey, so falling through on a transient Gui-state read error is safe.
             try { if (MyAPIGateway.Gui != null && MyAPIGateway.Gui.ChatEntryVisible) return; } catch { }
             var input = MyAPIGateway.Input;
             if (input == null) return;
@@ -238,8 +256,10 @@ namespace ShipyardPlugin
 
         public void Dispose()
         {
-            try { ChatCommands.Unhook(); } catch { }
-            try { _harmony?.UnpatchAll(Id); } catch { }
+            // Best-effort teardown: log failures (one shot at shutdown, no spam risk) but keep going so one
+            // failing step doesn't leave the rest hooked.
+            try { ChatCommands.Unhook(); } catch (Exception ex) { Log("Dispose: ChatCommands.Unhook failed: " + ex.Message); }
+            try { _harmony?.UnpatchAll(Id); } catch (Exception ex) { Log("Dispose: UnpatchAll failed: " + ex.Message); }
             Log("Dispose");
         }
 

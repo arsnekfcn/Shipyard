@@ -246,6 +246,8 @@ namespace ShipyardPlugin
             // The floating label is an IN-WORLD aiming hint (incl. the "± data ... Ctrl+Shift+D" prompt).
             // Drop it while a menu/cursor is open so it doesn't hang over the panel.
             // It comes back when you close the menu and aim again.
+            // Per-frame (called from Draw): deliberately swallowed and NOT logged — a transient Gui-state read
+            // failure here just means we draw the label this frame, which is harmless. Logging would spam.
             try { if (MyAPIGateway.Gui != null && MyAPIGateway.Gui.IsCursorVisible) return; } catch { }
 
             Vector3D wc = Vector3D.Transform(boxes[best].Center, gm);
