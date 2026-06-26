@@ -19,6 +19,8 @@ using VRage;
 using VRage.Game;
 using VRage.Game.ModAPI;
 using VRage.Game.ObjectBuilders.ComponentSystem;
+using VRage.Game.ObjectBuilders;
+using VRage.Game.GUI.TextPanel;
 using VRage.ModAPI;
 using VRage.ObjectBuilders;
 using VRage.ObjectBuilders.Private;
@@ -659,6 +661,54 @@ namespace ShipyardPlugin
             => string.IsNullOrEmpty(s) || s.IndexOf("GPS:", StringComparison.Ordinal) < 0
                 ? s : GpsCoord.Replace(s, "${1}0:0:0:");
 
+        // Scrub GPS coordinates out of an LCD / text-panel block's text fields + serialized surfaces. Keeps
+        // the text; only the GPS:x:y:z numbers are zeroed (same policy as CustomData). NEVER called for a
+        // programmable block, so PB scripts are untouched (per SECURITY.md). ScrubGpsText returns the SAME
+        // string reference when nothing matched, so ReferenceEquals is a cheap "did it change?" check.
+        private static bool ScrubPanelText(MyObjectBuilder_TextPanel tp)
+        {
+            bool changed = false;
+            string d;
+            d = ScrubGpsText(tp.Description);       if (!ReferenceEquals(d, tp.Description))       { tp.Description = d; changed = true; }
+            d = ScrubGpsText(tp.PublicDescription); if (!ReferenceEquals(d, tp.PublicDescription)) { tp.PublicDescription = d; changed = true; }
+            d = ScrubGpsText(tp.Title);             if (!ReferenceEquals(d, tp.Title))             { tp.Title = d; changed = true; }
+            d = ScrubGpsText(tp.PublicTitle);       if (!ReferenceEquals(d, tp.PublicTitle))       { tp.PublicTitle = d; changed = true; }
+            changed |= ScrubPanelDataList(tp.TextPanels);
+            changed |= ScrubSpriteColl(tp.Sprites);
+            return changed;
+        }
+
+        // Scrub each serialized text surface (modern per-surface text used by LCDs + multi-surface blocks).
+        private static bool ScrubPanelDataList(List<MySerializedTextPanelData> panels)
+        {
+            if (panels == null) return false;
+            bool changed = false;
+            foreach (var s in panels)
+            {
+                if (s == null) continue;
+                string d = ScrubGpsText(s.Text);
+                if (!ReferenceEquals(d, s.Text)) { s.Text = d; changed = true; }
+                changed |= ScrubSpriteColl(s.Sprites);
+            }
+            return changed;
+        }
+
+        // Scrub GPS out of a surface's text sprites. The collection is a struct but its sprite array is a
+        // shared reference, so mutating array slots persists; each sprite is a struct -> read-modify-write.
+        private static bool ScrubSpriteColl(MySerializableSpriteCollection coll)
+        {
+            var arr = coll.Sprites;
+            if (arr == null) return false;
+            bool changed = false;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                var sp = arr[i];
+                string d = ScrubGpsText(sp.Data);
+                if (!ReferenceEquals(d, sp.Data)) { sp.Data = d; arr[i] = sp; changed = true; }
+            }
+            return changed;
+        }
+
         // ---- GPS scrub: a captured blueprint embeds WORLD coordinates. Every grid's
         // PositionAndOrientation is literally where it was built (someone's base location), and
         // autopilot/AI blocks carry raw GPS waypoints. Zero all of it before anything is uploaded.
@@ -704,6 +754,22 @@ namespace ShipyardPlugin
                     if (pj.ProjectedGrid != null) changed |= ScrubGrids(new[] { pj.ProjectedGrid });
                     if (pj.ProjectedGrids != null && pj.ProjectedGrids.Count > 0) changed |= ScrubGrids(pj.ProjectedGrids.ToArray());
                 }
+                else if (b is MyObjectBuilder_DefensiveCombatBlock dc)
+                {
+                    // AI Defensive Combat block stores raw world coordinates / a selected GPS directly on the
+                    // block (custom flee point, last-seen-enemy position). Zero them.
+                    if (dc.CustomFleeCoordinates != Vector3D.Zero || dc.LastKnownEnemyPosition.HasValue ||
+                        dc.FleeWaypoint != null || dc.SelectedGpsHashNew.HasValue || dc.SelectedGpsHash.HasValue) changed = true;
+                    dc.CustomFleeCoordinates = Vector3D.Zero; dc.UseCustomFleeCoordinates = false;
+                    dc.LastKnownEnemyPosition = null; dc.FleeWaypoint = null;
+                    dc.SelectedGpsHashNew = null; dc.SelectedGpsHash = null;
+                }
+                else if (b is MyObjectBuilder_TextPanel tp)
+                {
+                    // LCD/text-panel text can carry pasted GPS; zero the coordinates but keep the text. A
+                    // standalone TextPanel is never a programmable block, so scripts stay untouched.
+                    changed |= ScrubPanelText(tp);
+                }
                 // Automaton (AI block) mission data rides in the block's COMPONENT container,
                 // not the block OB itself - autopilot waypoints + the recorded "home" are raw GPS.
                 if (b.ComponentContainer != null && b.ComponentContainer.Components != null)
@@ -729,6 +795,26 @@ namespace ShipyardPlugin
                                 string scrub = ScrubGpsText(v);
                                 if (!string.Equals(scrub, v, StringComparison.Ordinal)) { ms.Storage.Dictionary[key] = scrub; changed = true; }
                             }
+                        }
+                        else if (cd.Component is MyObjectBuilder_AutopilotComponent apc)
+                        {
+                            // AI Flight (Move) autopilot: waypoint list + raw world Coords + look-at point.
+                            if (apc.Waypoints != null || apc.Coords != null || apc.LookAtPosition.HasValue) changed = true;
+                            apc.Waypoints = null; apc.Coords = null; apc.Names = null;
+                            apc.LookAtPosition = null; apc.WorkAreaStartForward = Vector3D.Zero;
+                            apc.CurrentWaypointIndex = -1; apc.AutoPilotEnabled = false;
+                        }
+                        else if (cd.Component is MyObjectBuilder_PathRecorderComponent prc)
+                        {
+                            // AI Recorder: recorded path of world waypoints.
+                            if (prc.Waypoints != null) changed = true;
+                            prc.Waypoints = null;
+                        }
+                        else if (cd.Component is MyObjectBuilder_MultiTextPanelComponent mtp && !(b is MyObjectBuilder_MyProgrammableBlock))
+                        {
+                            // Multi-surface block text (cockpit / LCD surfaces): scrub GPS, keep text. The PB
+                            // guard ensures a programmable block's surfaces (and its script) are NEVER touched.
+                            changed |= ScrubPanelDataList(mtp.TextPanelsContents);
                         }
                     }
             }
@@ -810,6 +896,8 @@ namespace ShipyardPlugin
                         // scrubbed on the TYPED blueprint object, no regex-over-XML and no whole-file reformat
                         // (which would wreck Shipyard's version diffs).
                         if (bp.WorkshopId != 0 || bp.WorkshopIds != null) { bp.WorkshopId = 0; bp.WorkshopIds = null; gpsChanged = true; }
+                        if (bp.OwnerSteamId != 0) { bp.OwnerSteamId = 0; gpsChanged = true; }   // owner identity on the blueprint itself
+
                         if (!string.IsNullOrEmpty(bp.DisplayName) && bp.DisplayName.StartsWith("[SY] ", StringComparison.Ordinal))
                         { bp.DisplayName = bp.DisplayName.Substring(5); gpsChanged = true; }
                     }
