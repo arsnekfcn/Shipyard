@@ -156,18 +156,16 @@ filename. After deploying, **restart SE via Pulsar** and enable "Shipyard" under
 
 ---
 
-## Linux (Proton)
+## Linux
 
-SE1 is Windows-only; Linux players run the game + Pulsar through **Proton/Wine**, so the plugin
-executes in the Windows runtime under Wine and works largely unchanged.
+Pulsar has Linux-capable variants, so Shipyard should run on Linux largely unchanged. **This probably
+works but has not been fully tested by the author** — please report any issues. Notes:
 
 - **Offline mode is the zero-friction path.** Local git, no account, no browser, no token.
-- **Online sign-in** works via device flow; if the browser doesn't auto-open under Wine, use the
-  URL + one-time code shown on the sign-in screen (open `github.com/login/device` yourself).
-- **Token storage** uses Windows DPAPI; under Wine it persists within your Proton prefix. If encrypted
-  persistence ever fails it won't crash — you stay signed in for the session and re-auth next launch.
-- The native `git2-*.dll` (offline engine) is a Windows DLL and loads fine under Wine.
-- Please report any issues, Linux support is intended but not production-ready/tested for 1.0
+- **Online sign-in** works via device flow; if the browser doesn't auto-open, use the URL + one-time
+  code shown on the sign-in screen (open `github.com/login/device` yourself).
+- **Token storage** uses Windows DPAPI; where that isn't available it won't crash — you stay signed in
+  for the session and re-auth next launch.
 
 ---
 
