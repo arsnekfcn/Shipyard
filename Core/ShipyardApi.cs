@@ -683,13 +683,18 @@ namespace ShipyardPlugin
         {
             if (panels == null) return false;
             bool changed = false;
-            foreach (var s in panels)
-            {
-                if (s == null) continue;
-                string d = ScrubGpsText(s.Text);
-                if (!ReferenceEquals(d, s.Text)) { s.Text = d; changed = true; }
-                changed |= ScrubSpriteColl(s.Sprites);
-            }
+            foreach (var s in panels) changed |= ScrubPanelData(s);
+            return changed;
+        }
+
+        // Scrub a single serialized text surface (its text + any text sprites).
+        private static bool ScrubPanelData(MySerializedTextPanelData s)
+        {
+            if (s == null) return false;
+            bool changed = false;
+            string d = ScrubGpsText(s.Text);
+            if (!ReferenceEquals(d, s.Text)) { s.Text = d; changed = true; }
+            changed |= ScrubSpriteColl(s.Sprites);
             return changed;
         }
 
@@ -815,6 +820,13 @@ namespace ShipyardPlugin
                             // Multi-surface block text (cockpit / LCD surfaces): scrub GPS, keep text. The PB
                             // guard ensures a programmable block's surfaces (and its script) are NEVER touched.
                             changed |= ScrubPanelDataList(mtp.TextPanelsContents);
+                        }
+                        else if (cd.Component is MyObjectBuilder_LcdSurfaceComponent lsc && !(b is MyObjectBuilder_MyProgrammableBlock))
+                        {
+                            // Modern LCD / cockpit text surface (one MySerializedTextPanelData per component) -
+                            // this is where current LCD blocks actually store their text. Scrub GPS, keep text.
+                            // PB-guarded: a programmable block's own screens (its script's output) stay untouched.
+                            changed |= ScrubPanelData(lsc.TextPanelContent);
                         }
                     }
             }
