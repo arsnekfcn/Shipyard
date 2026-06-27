@@ -237,7 +237,7 @@ namespace ShipyardPlugin
         public static void CloseActiveIfOpen()
         {
             var s = _active;
-            if (s != null && s.IsOpened) { try { s.CloseScreen(false); } catch { } }
+            if (s != null && s.IsOpened) { try { s.CloseScreen(false); } catch (Exception ex) { Plugin.Log("close active screen failed: " + ex.Message); } }
             _active = null;
         }
 
@@ -643,7 +643,7 @@ namespace ShipyardPlugin
         private static float SafeGuiAspect()
         {
             try { var r = MyGuiManager.GetSafeGuiRectangle(); if (r.Height > 0) return (float)r.Width / r.Height; }
-            catch { }
+            catch { }   // GUI rectangle unavailable -> fall back to the 4:3 default below
             return 4f / 3f;
         }
 
@@ -663,7 +663,7 @@ namespace ShipyardPlugin
                     if (w > 0 && h > 0) return (float)w / h;
                 }
             }
-            catch { }
+            catch { }   // missing/corrupt/unreadable PNG header -> 16:9 fallback (per this method's contract above)
             return 16f / 9f;
         }
 

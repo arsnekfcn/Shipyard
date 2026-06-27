@@ -19,6 +19,8 @@ using VRage;
 using VRage.Game;
 using VRage.Game.ModAPI;
 using VRage.Game.ObjectBuilders.ComponentSystem;
+using VRage.Game.ObjectBuilders;
+using VRage.Game.GUI.TextPanel;
 using VRage.ModAPI;
 using VRage.ObjectBuilders;
 using VRage.ObjectBuilders.Private;
@@ -557,7 +559,8 @@ namespace ShipyardPlugin
                 () =>
                 {
                     string msg = op();
-                    try { Thread.Sleep(GitHubSettleMs); } catch { }   // let GitHub settle before re-fetching
+                    try { Thread.Sleep(GitHubSettleMs); }   // let GitHub settle before re-fetching
+                    catch (ThreadInterruptedException) { }   // an interrupt just means proceed to the re-fetch now
                     ShipyardData data = null;
                     try { data = FetchAll(); }
                     catch (Exception ex) { Plugin.Log("post-op refresh failed: " + ex.Message); }
@@ -623,21 +626,29 @@ namespace ShipyardPlugin
                 });
         }
 
-        // Ownership/privacy scrub applied to everything we push to the repo (publish + WIP commits):
-        // zero owners/builders, strip SteamID64s, drop the local install-time DisplayName markers.
-        private static string ScrubBp(string xml)
+        // SteamID64 CONTENT scan over the serialized blueprint. Deliberately a text scan, NOT XML-node work:
+        // an individual 17-digit SteamID can appear anywhere — inside CustomData, a PB script body, or mod
+        // storage — none of which are addressable as elements, so XDocument/XmlDocument can't reach them.
+        // Covers the FULL range: prefix 7656119 for lower account ids, rolling to 7656120 once accountID
+        // passes ~1.02B (7656119-only silently leaked the majority of modern accounts). Lookarounds keep it
+        // to a standalone 17-digit id (not a digit run embedded in a larger number/decimal). Block ownership
+        // (<Owner>/<BuiltBy>, themselves SteamID64s) is scrubbed on the typed objects in ScrubGrid, so the
+        // only ids this still catches are the ones buried in free text.
+        private static readonly Regex SteamId64 = new Regex(@"(?<![\d.\-])7656(119|120)\d{10}(?![\d.])", RegexOptions.Compiled);
+        private static string ScrubSteamIds(string xml) => SteamId64.Replace(xml, "0");
+
+        // FALLBACK ONLY: used when a blueprint can't be deserialized into typed objects (corrupt/unknown),
+        // so the object-level scrub can't run. A best-effort TEXT scrub so raw ownership / Workshop ids /
+        // SteamIDs still never leave the machine. The structural element regexes here are intentional for
+        // this un-parseable path; the normal path manipulates the typed object builders instead.
+        private static string ScrubBpTextFallback(string xml)
         {
             xml = Regex.Replace(xml, @"<Owner>\d+</Owner>", "<Owner>0</Owner>");
             xml = Regex.Replace(xml, @"<BuiltBy>\d+</BuiltBy>", "<BuiltBy>0</BuiltBy>");
-            // Covers the FULL individual SteamID64 range: the prefix is 7656119 for lower account ids and
-            // rolls over to 7656120 once accountID passes ~1.02B (76561200000000000) - which is the majority
-            // of modern accounts, so 7656119-only silently leaked them. Lookarounds keep it to a standalone
-            // 17-digit id (not a digit run embedded in a larger number/decimal). Replaces the id with "0".
-            xml = Regex.Replace(xml, @"(?<![\d.\-])7656(119|120)\d{10}(?![\d.])", "0");
-            // Workshop item ids are PER-USER publish state (see WorkshopPush), not repo data.
+            xml = ScrubSteamIds(xml);
             xml = Regex.Replace(xml, @"<WorkshopId>\d+</WorkshopId>", "<WorkshopId>0</WorkshopId>");
             xml = Regex.Replace(xml, @"<WorkshopIds>.*?</WorkshopIds>", "", RegexOptions.Singleline);
-            return xml.Replace("<DisplayName>[SY] ", "<DisplayName>");   // strip the tool's repo-managed marker
+            return xml.Replace("<DisplayName>[SY] ", "<DisplayName>");
         }
 
         // SE GPS tokens embed a world location: "GPS:<name>:<x>:<y>:<z>:<#color>:". Scripts stash these
@@ -649,6 +660,59 @@ namespace ShipyardPlugin
         internal static string ScrubGpsText(string s)
             => string.IsNullOrEmpty(s) || s.IndexOf("GPS:", StringComparison.Ordinal) < 0
                 ? s : GpsCoord.Replace(s, "${1}0:0:0:");
+
+        // Scrub GPS coordinates out of an LCD / text-panel block's text fields + serialized surfaces. Keeps
+        // the text; only the GPS:x:y:z numbers are zeroed (same policy as CustomData). NEVER called for a
+        // programmable block, so PB scripts are untouched (per SECURITY.md). ScrubGpsText returns the SAME
+        // string reference when nothing matched, so ReferenceEquals is a cheap "did it change?" check.
+        private static bool ScrubPanelText(MyObjectBuilder_TextPanel tp)
+        {
+            bool changed = false;
+            string d;
+            d = ScrubGpsText(tp.Description);       if (!ReferenceEquals(d, tp.Description))       { tp.Description = d; changed = true; }
+            d = ScrubGpsText(tp.PublicDescription); if (!ReferenceEquals(d, tp.PublicDescription)) { tp.PublicDescription = d; changed = true; }
+            d = ScrubGpsText(tp.Title);             if (!ReferenceEquals(d, tp.Title))             { tp.Title = d; changed = true; }
+            d = ScrubGpsText(tp.PublicTitle);       if (!ReferenceEquals(d, tp.PublicTitle))       { tp.PublicTitle = d; changed = true; }
+            changed |= ScrubPanelDataList(tp.TextPanels);
+            changed |= ScrubSpriteColl(tp.Sprites);
+            return changed;
+        }
+
+        // Scrub each serialized text surface (modern per-surface text used by LCDs + multi-surface blocks).
+        private static bool ScrubPanelDataList(List<MySerializedTextPanelData> panels)
+        {
+            if (panels == null) return false;
+            bool changed = false;
+            foreach (var s in panels) changed |= ScrubPanelData(s);
+            return changed;
+        }
+
+        // Scrub a single serialized text surface (its text + any text sprites).
+        private static bool ScrubPanelData(MySerializedTextPanelData s)
+        {
+            if (s == null) return false;
+            bool changed = false;
+            string d = ScrubGpsText(s.Text);
+            if (!ReferenceEquals(d, s.Text)) { s.Text = d; changed = true; }
+            changed |= ScrubSpriteColl(s.Sprites);
+            return changed;
+        }
+
+        // Scrub GPS out of a surface's text sprites. The collection is a struct but its sprite array is a
+        // shared reference, so mutating array slots persists; each sprite is a struct -> read-modify-write.
+        private static bool ScrubSpriteColl(MySerializableSpriteCollection coll)
+        {
+            var arr = coll.Sprites;
+            if (arr == null) return false;
+            bool changed = false;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                var sp = arr[i];
+                string d = ScrubGpsText(sp.Data);
+                if (!ReferenceEquals(d, sp.Data)) { sp.Data = d; arr[i] = sp; changed = true; }
+            }
+            return changed;
+        }
 
         // ---- GPS scrub: a captured blueprint embeds WORLD coordinates. Every grid's
         // PositionAndOrientation is literally where it was built (someone's base location), and
@@ -680,6 +744,9 @@ namespace ShipyardPlugin
             if (g.CubeBlocks == null) return changed;
             foreach (var b in g.CubeBlocks)
             {
+                // Ownership scrub on the typed block (not via regex over the serialized XML): Owner/BuiltBy
+                // are SteamID64s identifying who built/owns the block.
+                if (b.Owner != 0 || b.BuiltBy != 0) { b.Owner = 0; b.BuiltBy = 0; changed = true; }
                 if (b is MyObjectBuilder_RemoteControl rc)
                 {
                     if (rc.Waypoints != null || rc.Coords != null) changed = true;
@@ -691,6 +758,22 @@ namespace ShipyardPlugin
                     // a loaded projection is a NESTED blueprint with its own world coordinates
                     if (pj.ProjectedGrid != null) changed |= ScrubGrids(new[] { pj.ProjectedGrid });
                     if (pj.ProjectedGrids != null && pj.ProjectedGrids.Count > 0) changed |= ScrubGrids(pj.ProjectedGrids.ToArray());
+                }
+                else if (b is MyObjectBuilder_DefensiveCombatBlock dc)
+                {
+                    // AI Defensive Combat block stores raw world coordinates / a selected GPS directly on the
+                    // block (custom flee point, last-seen-enemy position). Zero them.
+                    if (dc.CustomFleeCoordinates != Vector3D.Zero || dc.LastKnownEnemyPosition.HasValue ||
+                        dc.FleeWaypoint != null || dc.SelectedGpsHashNew.HasValue || dc.SelectedGpsHash.HasValue) changed = true;
+                    dc.CustomFleeCoordinates = Vector3D.Zero; dc.UseCustomFleeCoordinates = false;
+                    dc.LastKnownEnemyPosition = null; dc.FleeWaypoint = null;
+                    dc.SelectedGpsHashNew = null; dc.SelectedGpsHash = null;
+                }
+                else if (b is MyObjectBuilder_TextPanel tp)
+                {
+                    // LCD/text-panel text can carry pasted GPS; zero the coordinates but keep the text. A
+                    // standalone TextPanel is never a programmable block, so scripts stay untouched.
+                    changed |= ScrubPanelText(tp);
                 }
                 // Automaton (AI block) mission data rides in the block's COMPONENT container,
                 // not the block OB itself - autopilot waypoints + the recorded "home" are raw GPS.
@@ -717,6 +800,33 @@ namespace ShipyardPlugin
                                 string scrub = ScrubGpsText(v);
                                 if (!string.Equals(scrub, v, StringComparison.Ordinal)) { ms.Storage.Dictionary[key] = scrub; changed = true; }
                             }
+                        }
+                        else if (cd.Component is MyObjectBuilder_AutopilotComponent apc)
+                        {
+                            // AI Flight (Move) autopilot: waypoint list + raw world Coords + look-at point.
+                            if (apc.Waypoints != null || apc.Coords != null || apc.LookAtPosition.HasValue) changed = true;
+                            apc.Waypoints = null; apc.Coords = null; apc.Names = null;
+                            apc.LookAtPosition = null; apc.WorkAreaStartForward = Vector3D.Zero;
+                            apc.CurrentWaypointIndex = -1; apc.AutoPilotEnabled = false;
+                        }
+                        else if (cd.Component is MyObjectBuilder_PathRecorderComponent prc)
+                        {
+                            // AI Recorder: recorded path of world waypoints.
+                            if (prc.Waypoints != null) changed = true;
+                            prc.Waypoints = null;
+                        }
+                        else if (cd.Component is MyObjectBuilder_MultiTextPanelComponent mtp && !(b is MyObjectBuilder_MyProgrammableBlock))
+                        {
+                            // Multi-surface block text (cockpit / LCD surfaces): scrub GPS, keep text. The PB
+                            // guard ensures a programmable block's surfaces (and its script) are NEVER touched.
+                            changed |= ScrubPanelDataList(mtp.TextPanelsContents);
+                        }
+                        else if (cd.Component is MyObjectBuilder_LcdSurfaceComponent lsc && !(b is MyObjectBuilder_MyProgrammableBlock))
+                        {
+                            // Modern LCD / cockpit text surface (one MySerializedTextPanelData per component) -
+                            // this is where current LCD blocks actually store their text. Scrub GPS, keep text.
+                            // PB-guarded: a programmable block's own screens (its script's output) stay untouched.
+                            changed |= ScrubPanelData(lsc.TextPanelContent);
                         }
                     }
             }
@@ -746,7 +856,7 @@ namespace ShipyardPlugin
                     }
                 }
             }
-            catch { }
+            catch { }   // best-effort read of a block's mod-storage entry; absent/unreadable -> null (caller handles)
             return null;
         }
 
@@ -794,15 +904,24 @@ namespace ShipyardPlugin
                     foreach (var bp in defs.ShipBlueprints)
                     {
                         gpsChanged |= ScrubGrids(bp.CubeGrids);
+                        // Workshop ids (per-user publish state, not repo data) + the [SY] install marker:
+                        // scrubbed on the TYPED blueprint object, no regex-over-XML and no whole-file reformat
+                        // (which would wreck Shipyard's version diffs).
                         if (bp.WorkshopId != 0 || bp.WorkshopIds != null) { bp.WorkshopId = 0; bp.WorkshopIds = null; gpsChanged = true; }
+                        if (bp.OwnerSteamId != 0) { bp.OwnerSteamId = 0; gpsChanged = true; }   // owner identity on the blueprint itself
+
+                        if (!string.IsNullOrEmpty(bp.DisplayName) && bp.DisplayName.StartsWith("[SY] ", StringComparison.Ordinal))
+                        { bp.DisplayName = bp.DisplayName.Substring(5); gpsChanged = true; }
                     }
                     using (var ms = new MemoryStream())
                         if (MyObjectBuilderSerializerKeen.SerializeXML(ms, defs))
-                            return ScrubBp(System.Text.Encoding.UTF8.GetString(ms.ToArray()));
+                            // Only the SteamID content scan is left for the serialized text (see ScrubSteamIds).
+                            return ScrubSteamIds(System.Text.Encoding.UTF8.GetString(ms.ToArray()));
                 }
             }
             catch (Exception ex) { Plugin.Log("ScrubBpFile structural scrub failed: " + ex.Message); }
-            return ScrubBp(System.Text.Encoding.UTF8.GetString(bytes));
+            // Deserialize failed -> typed scrub unavailable; best-effort text fallback so nothing leaks.
+            return ScrubBpTextFallback(System.Text.Encoding.UTF8.GetString(bytes));
         }
 
         // Read a file even while another process holds it open. SE keeps local blueprint files
@@ -1143,6 +1262,30 @@ namespace ShipyardPlugin
         // Publish scrubs both back, so install -> publish round-trips stay clean.
         private static byte[] PrepareInstalledBp(byte[] bytes)
         {
+            // Primary: rewrite the TYPED objects (no regex over XML). This copy is only pasted into the
+            // world, never committed, so reserialization here can't affect repo diffs.
+            try
+            {
+                MyObjectBuilder_Definitions defs; ulong sz;
+                if (MyObjectBuilderSerializer.DeserializeXML(bytes, out defs, out sz) && defs.ShipBlueprints != null)
+                {
+                    foreach (var bp in defs.ShipBlueprints)
+                    {
+                        if (!string.IsNullOrEmpty(bp.DisplayName) && !bp.DisplayName.StartsWith("[SY]", StringComparison.Ordinal))
+                            bp.DisplayName = "[SY] " + bp.DisplayName;
+                        if (bp.CubeGrids != null)
+                            foreach (var g in bp.CubeGrids)
+                                if (g.CubeBlocks != null)
+                                    foreach (var b in g.CubeBlocks)
+                                        if (b.Owner == 0) b.Owner = 1;   // non-zero so the game's paste reassigns it to the pasting player
+                    }
+                    using (var ms = new MemoryStream())
+                        if (MyObjectBuilderSerializerKeen.SerializeXML(ms, defs))
+                            return ms.ToArray();
+                }
+            }
+            catch (Exception ex) { Plugin.Log("PrepareInstalledBp structural rewrite failed: " + ex.Message); }
+            // Fallback (un-parseable blueprint): targeted text edits, same effect.
             try
             {
                 string xml = System.Text.Encoding.UTF8.GetString(bytes);
@@ -1153,7 +1296,7 @@ namespace ShipyardPlugin
                 xml = xml.Replace("<Owner>0</Owner>", "<Owner>1</Owner>");
                 return System.Text.Encoding.UTF8.GetBytes(xml);
             }
-            catch (Exception ex) { Plugin.Log("PrepareInstalledBp failed: " + ex.Message); }
+            catch (Exception ex) { Plugin.Log("PrepareInstalledBp text fallback failed: " + ex.Message); }
             return bytes;
         }
 
@@ -1169,7 +1312,8 @@ namespace ShipyardPlugin
         private static byte[] CachedBlobBytes(GitHubClient client, string sha)
         {
             string fp = Path.Combine(BlobCacheDir(), sha + ".bin");
-            try { if (File.Exists(fp)) return File.ReadAllBytes(fp); } catch { }
+            try { if (File.Exists(fp)) return File.ReadAllBytes(fp); }
+            catch { }   // cache read is best-effort: on any error fall through and fetch the blob fresh below
             byte[] data = BlobBytes(client.Git.Blob.Get(Auth.RepoOwner, Auth.RepoName, sha).GetAwaiter().GetResult());
             try { Directory.CreateDirectory(BlobCacheDir()); File.WriteAllBytes(fp, data); }
             catch (Exception ex) { Plugin.Log("blob cache write failed: " + ex.Message); }
@@ -1517,7 +1661,8 @@ namespace ShipyardPlugin
         private static void StampOwnership(MyObjectBuilder_CubeGrid[] grids)
         {
             long id = 0;
-            try { id = MyAPIGateway.Session?.Player?.IdentityId ?? 0; } catch { }
+            try { id = MyAPIGateway.Session?.Player?.IdentityId ?? 0; }
+            catch { }   // no local identity available -> id stays 0 and we return below (nothing to stamp)
             if (id == 0) return;
             foreach (var g in grids)
                 if (g.CubeBlocks != null)
@@ -1651,7 +1796,13 @@ namespace ShipyardPlugin
                         new NewCommit("checkout: " + cs + " by @" + login, mainCommit.Tree.Sha, mainRef.Object.Sha)).GetAwaiter().GetResult();
                     client.Git.Reference.Create(Auth.RepoOwner, Auth.RepoName,
                         new NewReference("refs/heads/" + CheckoutBranch(cs), commit.Sha)).GetAwaiter().GetResult();
-                    byte[] bytes = GetBlueprintFileBytes(client, CheckoutBranch(cs), cs, "bp.sbc");
+                    // Read the WIP bytes from main's head COMMIT (which this checkout branch was just forked
+                    // from, so the tree/bp.sbc is identical), NOT the just-created checkout ref. GitHub ref
+                    // propagation lags, so reading through refs/heads/checkout/... right after creating it can
+                    // 404 -> null bytes -> a spurious "Couldn't parse the blueprint" on first checkout (which
+                    // closing + re-checkout used to mask). Reading by commit SHA is content-addressed -> no lag.
+                    var tree = GetCommitTree(client, mainRef.Object.Sha);
+                    byte[] bytes = tree != null ? TreeFileBytes(client, tree, RootSlash + cs + "/bp.sbc") : null;
                     Plugin.Log("checked out " + cs + " by " + login);
                     return new object[] { "new", ParseGrids(bytes, cs), commit.Sha };
                 },
@@ -1775,7 +1926,7 @@ namespace ShipyardPlugin
                         if (!MyObjectBuilderSerializerKeen.SerializeXML(ms, defs)) throw new Exception("Couldn't serialize the captured grid.");
                         xml = System.Text.Encoding.UTF8.GetString(ms.ToArray());
                     }
-                    xml = ScrubBp(xml);
+                    xml = ScrubSteamIds(xml);   // ownership/GPS already scrubbed on the typed grids above
                     LocalSaveShip(cs, System.Text.Encoding.UTF8.GetBytes(xml), null, null, "update: " + cs + " (" + delta + ") offline");
                     Plugin.Log("local commit " + cs + " (" + delta + ")");
                     return "Committed to your local shipyard:\n  " + cs + "\n  " + delta + ".";
@@ -1861,7 +2012,7 @@ namespace ShipyardPlugin
                     var client = Gh();
                     string owner = Auth.RepoOwner, repo = Auth.RepoName, branch = CheckoutBranch(cs);
                     string login = Auth.Login;   // stored at sign-in; no User.Current round-trip
-                    if (string.IsNullOrEmpty(login)) { try { login = client.User.Current().GetAwaiter().GetResult().Login; } catch { } }
+                    if (string.IsNullOrEmpty(login)) { try { login = client.User.Current().GetAwaiter().GetResult().Login; } catch (Exception ex) { Plugin.Log("login lookup (User.Current) failed: " + ex.Message); } }
 
                     Reference branchRef;
                     try { branchRef = client.Git.Reference.Get(owner, repo, "heads/" + branch).GetAwaiter().GetResult(); }
@@ -1899,7 +2050,7 @@ namespace ShipyardPlugin
                             throw new Exception("Couldn't serialize the captured grid.");
                         xml = System.Text.Encoding.UTF8.GetString(ms.ToArray());
                     }
-                    xml = ScrubBp(xml);
+                    xml = ScrubSteamIds(xml);   // ownership/GPS already scrubbed on the typed grids above
 
                     // Fire the SLOW bp.sbc upload + the head-commit read concurrently; do the diff (pure
                     // in-memory) while they run, so the upload no longer waits behind reads + a download.
@@ -2180,7 +2331,7 @@ namespace ShipyardPlugin
         {
             var client = Gh();
             string me = Auth.Login;   // we store the login at sign-in; no need for a User.Current round-trip
-            if (string.IsNullOrEmpty(me)) { try { me = client.User.Current().GetAwaiter().GetResult().Login; } catch { } }
+            if (string.IsNullOrEmpty(me)) { try { me = client.User.Current().GetAwaiter().GetResult().Login; } catch (Exception ex) { Plugin.Log("login lookup (User.Current) failed: " + ex.Message); } }
             if (owners == null) owners = ReadCodeowners(client);
             var prs = client.PullRequest.GetAllForRepository(Auth.RepoOwner, Auth.RepoName).GetAwaiter().GetResult();
 
@@ -2590,7 +2741,7 @@ namespace ShipyardPlugin
                     {
                         MyCubeBlockDefinition def = null;
                         try { def = MyDefinitionManager.Static.GetCubeBlockDefinition(new MyDefinitionId(b.TypeId, b.SubtypeId)); }
-                        catch { }
+                        catch { }   // unknown/modded block id -> def stays null and is counted as 'unknown' below
                         if (def == null) { unknown++; continue; }
                         massKg += def.Mass;
                         if (def is MyThrustDefinition th)

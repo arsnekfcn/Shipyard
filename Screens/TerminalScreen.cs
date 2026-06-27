@@ -72,6 +72,7 @@ namespace ShipyardPlugin
                 if (!_autoCopied)
                 {
                     _autoCopied = true;
+                    // Clipboard copy is a convenience; if it fails the code is still shown on-screen to copy by hand.
                     try { VRage.Utils.MyClipboardHelper.SetClipboard(_big); } catch { }
                 }
                 CenterLine("(copied to clipboard - paste it on the GitHub page)", y, Brand.AccentDim, 0.6f);
@@ -89,7 +90,7 @@ namespace ShipyardPlugin
             if (!string.IsNullOrEmpty(_big))
             {
                 Controls.Add(Frame.MakeButton("COPY CODE", new Vector2(-0.12f, bottom - 0.095f),
-                    new Vector2(0.18f, 0.04f), _ => { try { VRage.Utils.MyClipboardHelper.SetClipboard(_big); } catch { } }));
+                    new Vector2(0.18f, 0.04f), _ => { try { VRage.Utils.MyClipboardHelper.SetClipboard(_big); } catch { /* convenience copy; code is on-screen to copy by hand */ } }));
                 Controls.Add(Frame.MakeButton("EXIT", new Vector2(0.12f, bottom - 0.095f),
                     new Vector2(0.18f, 0.04f), _ => CloseScreen(false)));
             }
@@ -117,7 +118,7 @@ namespace ShipyardPlugin
                     _slogan.Text = "\"" + Brand.Slogans[_sloganIdx] + "\"";
                 }
             }
-            catch { }
+            catch { }   // per-frame overlay animation: a transient draw/state error must not break Update, and logging every frame would spam
             return base.Update(hasFocus);
         }
 

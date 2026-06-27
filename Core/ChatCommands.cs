@@ -39,7 +39,8 @@ namespace ShipyardPlugin
             {
                 // Mirror Unhook(): actually detach the handler. SE/Pulsar can keep Utilities alive across
                 // a session teardown, so leaving it attached would double-register OnMessage next session.
-                try { if (MyAPIGateway.Utilities != null) MyAPIGateway.Utilities.MessageEntered -= OnMessage; } catch { }
+                try { if (MyAPIGateway.Utilities != null) MyAPIGateway.Utilities.MessageEntered -= OnMessage; }
+                catch (Exception ex) { Plugin.Log("chat unhook (session end) failed: " + ex.Message); }
                 _hooked = false;
             }
         }
@@ -251,6 +252,8 @@ namespace ShipyardPlugin
         private static string FolderOf(string cs) { int l = cs.LastIndexOf('/'); return l > 0 ? cs.Substring(0, l) : ""; }
         private static string NameOf(string cs) { int l = cs.LastIndexOf('/'); return l > 0 ? cs.Substring(l + 1) : cs; }
 
+        // Best-effort chat output: swallowed (not logged) because it's called per chat command and ShowMessage
+        // can be momentarily unavailable; a dropped echo is cosmetic and logging it could itself be noisy.
         private static void Echo(string msg) { try { MyAPIGateway.Utilities.ShowMessage(Brand.Faction, msg); } catch { } }
 
         private static void Help()

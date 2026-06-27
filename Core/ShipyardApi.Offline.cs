@@ -36,7 +36,9 @@ namespace ShipyardPlugin
             // pathspec, so an absolute or '..'-escaping root would write files the commit never captures.
             string resolvedRoot = Path.GetFullPath(Path.Combine(path, root));
             string repoFull = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, '/') + Path.DirectorySeparatorChar;
-            if (Path.IsPathRooted(root) || !resolvedRoot.TrimEnd(Path.DirectorySeparatorChar, '/').StartsWith(repoFull.TrimEnd(Path.DirectorySeparatorChar, '/'), StringComparison.OrdinalIgnoreCase))
+            // Compare WITH the trailing separator on both sides so the boundary is real (else "<repo>X" would
+            // pass as inside "<repo>"); mirrors EnsureUnderLocalRoot.
+            if (Path.IsPathRooted(root) || !(resolvedRoot.TrimEnd(Path.DirectorySeparatorChar, '/') + Path.DirectorySeparatorChar).StartsWith(repoFull, StringComparison.OrdinalIgnoreCase))
             { ShipyardRunner.ShowMessage("The shipyard root folder must be a relative path inside the repo (no leading slash, no '..')."); return; }
             ShipyardRunner.RunWithBusyThen<string>(
                 "Creating local shipyard...",

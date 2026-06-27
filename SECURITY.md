@@ -168,19 +168,22 @@ A blueprint captured from the world embeds **where it was built** and **who buil
 - **World position**: every grid's stored position/orientation is rebased so the primary grid sits at
   the origin (sub-grids keep their relative offsets, so paste/spawn are unaffected). The blueprint stops
   recording the spot it was saved.
-- **Autopilot / stored waypoints**: remote-control waypoints + coordinates, and Automaton block mission
-  data (autopilot routes, recorded "home"), are cleared. These are raw GPS.
-- **GPS in CustomData / script storage**: CustomData is *kept* (so the plugin can diff loadout changes),
-  but any `GPS:name:x:y:z:` token inside it has its **coordinates zeroed** (`GPS:name:0:0:0:`). The entry
-  stays so scripts still parse it; the location is gone.
-- **Ownership** — block `Owner`/`BuiltBy` and any SteamID64 are zeroed; per-user Workshop ids stripped.
+- **Autopilot / AI waypoints**: remote-control waypoints + coordinates, and AI-block mission data —
+  Automaton (autopilot route, recorded "home"), AI Flight/Move + Recorder autopilot paths, and the
+  Defensive Combat block's flee / last-known-enemy coordinates — are cleared. These are raw world positions.
+- **GPS in CustomData / mod storage / LCD text**: CustomData and mod storage are *kept* (so the plugin can
+  diff loadout changes), and LCD / text-surface panels keep their text — but any `GPS:name:x:y:z:` token has
+  its **coordinates zeroed** (`GPS:name:0:0:0:`). The entry stays so scripts still parse it; the location is gone.
+- **Ownership** — block `Owner`/`BuiltBy`, the blueprint's `OwnerSteamId`, and any SteamID64 are zeroed;
+  per-user Workshop ids stripped.
 - **Nested projector blueprints** are scrubbed the same way, recursively.
 
-**Honest limits.** The CustomData GPS scrub targets the standard `GPS:` token format. A script storing
-coordinates in some bespoke encoding could still slip through, and **LCD/text-panel text you typed by
-hand is not scrubbed**. CustomData is shared with everyone who can read the repo. If you keep genuinely
-sensitive data in a block, review it (the in-game Data Diff shows exactly what's stored) or use a
-dedicated account for the shipyard.
+**Honest limits.** The GPS scrub targets the standard `GPS:` token format, so coordinates in a bespoke
+encoding could slip through. **Programmable-block scripts (their source and `Storage`) are deliberately NOT
+touched** — breaking someone's navigation script would be worse than the rare leak, so review/remove
+sensitive GPS in your own scripts. CustomData and LCD text are shared with everyone who can read the repo;
+if you keep genuinely sensitive data in a block, review it (the in-game Data Diff shows exactly what's
+stored) or use a dedicated account for the shipyard.
 
 **Reasoning, and future plans:** I do not intend to make this feature optional, though if there is demand
 I will consider it further. I do NOT like that Keen embeds all of this data. Many new players who don't

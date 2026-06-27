@@ -32,24 +32,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Octokit (GitHub REST) + LibGit2Sharp (offline/local-git), restored from NuGet so Pulsar's
-         from-source build resolves them itself. LibGit2Sharp.NativeBinaries (the native git2-*.dll) comes
-         in transitively; its build props set GlobalSettings.NativeLibraryPath automatically under Pulsar. -->
-    <PackageReference Include="Octokit" Version="13.0.1" GeneratePathProperty="true" />
-    <PackageReference Include="LibGit2Sharp" Version="0.30.0" GeneratePathProperty="true" />
-    <!-- Logo crest embedded so the plugin ships as a single DLL; Plugin.ExtractLogo writes it out on Init. -->
-    <EmbeddedResource Include="assets\logo.png"><LogicalName>logo.png</LogicalName></EmbeddedResource>
-  </ItemGroup>
-
-  <!-- LOCAL single-file build ONLY (deploy.sh): embed the NuGet-restored managed DLLs + native git2 into
-       Shipyard.dll so manual installs stay one self-contained plugin. Sourced from the restored packages
-       (Pkg* path props), NOT a committed libs/ folder. Pulsar (from-source) ignores this csproj entirely,
-       so under Pulsar nothing is embedded and the packages resolve as ordinary NuGet deps. -->
-  <ItemGroup Condition="$(DefineConstants.Contains('LOCAL_BUILD'))">
-    <PackageReference Include="LibGit2Sharp.NativeBinaries" Version="2.0.322" GeneratePathProperty="true" />
-    <EmbeddedResource Include="$(PkgOctokit)\lib\netstandard2.0\Octokit.dll"><LogicalName>Octokit.dll</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="$(PkgLibGit2Sharp)\lib\net472\LibGit2Sharp.dll"><LogicalName>LibGit2Sharp.dll</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="$(PkgLibGit2Sharp_NativeBinaries)\runtimes\win-x64\native\git2-a418d9d.dll"><LogicalName>git2-a418d9d.dll</LogicalName></EmbeddedResource>
+    <!-- Octokit (GitHub REST) + LibGit2Sharp (offline/local-git) as ordinary NuGet deps. Pulsar's from-source
+         build references them from NuGet; the manual/prebuild build copies them (and LibGit2Sharp's transitive
+         native git2-*.dll) to the output, shipped as SEPARATE files alongside Shipyard.dll — nothing embedded,
+         no committed binaries. The logo ships as a plugin asset (assets/, declared in Shipyard.xml). -->
+    <PackageReference Include="Octokit" Version="13.0.1" />
+    <PackageReference Include="LibGit2Sharp" Version="0.30.0" />
   </ItemGroup>
 
   <ItemGroup>

@@ -57,8 +57,9 @@ The skin is cosmetic; the tool is "Shipyard".
   **per user**, so pushing again **updates the same item in place** instead of creating a
   duplicate. On success it opens the item's page in the **in-game Steam overlay**.
 - **Privacy scrub on every upload / commit:** grid rebased to origin; owner / BuiltBy /
-  SteamID / WorkshopId zeroed; autopilot/script waypoints cleared; **GPS coordinates scrubbed**
-  (including inside CustomData / mod storage). Best effort, embedded GPS in scripts not touched.
+  SteamID / OwnerSteamId / WorkshopId zeroed; remote-control + **AI-block** (autopilot / recorder /
+  defensive-combat) waypoints & coordinates cleared; **GPS coordinates scrubbed** inside CustomData /
+  mod storage / **LCD & text-surface panels**. Best effort; **programmable-block scripts are NOT touched**.
 - **Visual diff** (`HighlightManager`): non-destructive wireframe boxes on changed blocks.
   **Defaults: GREEN added, RED removed, ORANGE replaced (type swap), CYAN repainted, MAGENTA
   custom-data changed.** Plus a floating label on whatever changed block you look at. Aim at
@@ -84,38 +85,44 @@ The skin is cosmetic; the tool is "Shipyard".
 Single C# project (`net48`), namespace `ShipyardPlugin`, output **`Shipyard.dll`**
 (so Pulsar lists it as "Shipyard"). **Octokit and LibGit2Sharp are NuGet `PackageReference`s** —
 Pulsar's marketplace build compiles from source and restores them from NuGet (no binary DLLs are
-committed to the repo). For the local `deploy.sh` build only, they're embedded into the single
-`Shipyard.dll` (managed DLLs + native `git2-*.dll`) behind the `LOCAL_BUILD` constant, sourced from
-the NuGet restore; that build's native libgit2 self-extracts to `%APPDATA%\Shipyard\native\` on first run.
+committed to the repo). The local `deploy.sh` build ships them — and LibGit2Sharp's native
+`git2-*.dll` — as **separate files** alongside `Shipyard.dll` in `Legacy\Local\Shipyard\`
+(`Plugin.InitLocalGit` points LibGit2Sharp at the native; the logo loads from the plugin asset folder).
+
+Source is grouped into **`Core/`** (logic), **`Screens/`** (in-game GUI), **`Patches/`** (Harmony),
+and **`Tools/`** (build helpers); `Plugin.cs` (entry point), the `.csproj`, `Shipyard.xml`, `assets/`,
+and `deploy.sh` sit at the root.
 
 | File | Responsibility |
 |---|---|
-| `Plugin.cs` | `IPlugin` entry point. Harmony patch-all; under `LOCAL_BUILD`, `AssemblyResolve` loads the embedded Octokit/LibGit2Sharp + extracts native libgit2 (the marketplace build resolves these from NuGet instead); logo extraction; `Update()` drives chat commands, hotkey, Ctrl+Shift+D, and `HighlightManager.Draw`. |
-| `Auth.cs` | Per-user config (`%APPDATA%\Shipyard\config.json`) + DPAPI token (`token.dat`). Online repo + client id, mode/local-repo/author, and all highlight/diff prefs. |
-| `ShipyardApi.cs` | **Core (online).** Octokit calls: sign-in, repo save/init, collaborators/invites, fetch ships+PRs, publish, checkout/commit/PR/release, install/spawn/project, visual diff, compare/merge/approve/close/delete, privacy scrub. `ShipEntry`/`PrEntry`/`ManageData` models. |
-| `ShipyardApi.Offline.cs` | **Core (offline).** `partial class ShipyardApi`: local-git backend (init/read/save/commit/install/publish/delete) via LibGit2Sharp. |
-| `ShipyardScreen.cs` | The tabbed Browse / Publish / Review UI + per-frame animation (offline hides Review). |
-| `SettingsScreen.cs` | Account + repo settings (the "Account" screen; opens when nothing is configured). Sign-in/out, repo + saved-repo picker, BYO-app entry, "work offline". |
-| `HighlightOptionsScreen.cs` | The **Settings** screen for diff highlights: count, distance, per-category show/hide, hex colors, xray, clear-all. |
-| `ModeChooseScreen.cs` | First-boot Online / Offline chooser. |
-| `OfflineSetupScreen.cs` | Offline setup (local folder / top folder / author; switch back to Online). |
-| `ByoAppScreen.cs` | "Use your own GitHub App" (Option 2) — enter your public Client ID only. |
-| `ManageAccessScreen.cs` | Admin collaborator management. |
-| `PublishNewScreen.cs` | Step-2 form for "publish as NEW ship" (name / folder / tags). |
-| `WorkshopPush.cs` | Steam Workshop publish/update via the game's own pipeline; per-user item-id map (`workshop.json`); opens the page in the Steam overlay. |
-| `HighlightManager.cs` | In-world wireframe diff boxes (depth-tested or xray), look-at labels, visible-subset budgeting. |
-| `TextDiffScreen.cs` | Line-by-line (LCS) CustomData diff window (Ctrl+Shift+D); collapses unchanged runs. |
-| `DialogScreen.cs` | In-style result/confirm dialog (replaces the stock message box). |
-| `TerminalScreen.cs` | Animated busy / sign-in overlay. |
-| `BootScreen.cs` | 80s-style boot sequence shown while the repo fetches on open. |
-| `InfoScreen.cs` | Scrollable multi-line text view (help, PR details). |
-| `Frame.cs` | Shared chrome: divider, classification footer, button/label constructors. |
-| `Brand.cs` | Lore skin: faction strings, slogans, amber palette, logo path. |
-| `ShipyardRunner.cs` | Thread/GUI plumbing: `InvokeOnMain`, busy/sign-in overlays, background workers, notifications. |
-| `ShipyardErrors.cs` | Friendly error mapping (e.g. wipe a bad token on `AuthorizationException`). |
-| `ChatCommands.cs` | `/sy` chat command parser + terminal navigation. |
-| `BlueprintScreenPatch.cs` | Harmony postfix that injects the "Shipyard" button into F10. |
-| `assets/logo.png` | Mandate crest (shown on the auth screen). Embedded; self-extracts on Init. |
+| `Plugin.cs` | `IPlugin` entry point. Harmony patch-all; `LoadAssets` receives Pulsar's asset folder; `InitLocalGit` points LibGit2Sharp at the native git2; `Update()` drives chat commands, hotkey, Ctrl+Shift+D, and `HighlightManager.Draw`. |
+| `Core/ShipyardApi.cs` | **Core (online).** Octokit calls: sign-in, repo save/init, collaborators/invites, fetch ships+PRs, publish, checkout/commit/PR/release, install/spawn/project, visual diff, compare/merge/approve/close/delete, privacy scrub. `ShipEntry`/`PrEntry`/`ManageData` models. |
+| `Core/ShipyardApi.Offline.cs` | **Core (offline).** `partial class ShipyardApi`: local-git backend (init/read/save/commit/install/publish/delete) via LibGit2Sharp. |
+| `Core/Auth.cs` | Per-user config (`%APPDATA%\Shipyard\config.json`) + DPAPI token (`token.dat`). Online repo + client id, mode/local-repo/author, and all highlight/diff prefs. |
+| `Core/WorkshopPush.cs` | Steam Workshop publish/update via the game's own pipeline; per-user item-id map (`workshop.json`); opens the page in the Steam overlay. |
+| `Core/HighlightManager.cs` | In-world wireframe diff boxes (depth-tested or xray), look-at labels, visible-subset budgeting. |
+| `Core/ShipyardRunner.cs` | Thread/GUI plumbing: `InvokeOnMain`, busy/sign-in overlays, background workers, notifications. |
+| `Core/ShipyardErrors.cs` | Friendly error mapping (e.g. wipe a bad token on `AuthorizationException`). |
+| `Core/ChatCommands.cs` | `/sy` chat command parser + terminal navigation. |
+| `Screens/ShipyardScreen.cs` | The tabbed Browse / Publish / Review UI + per-frame animation (offline hides Review). |
+| `Screens/SettingsScreen.cs` | Account + repo settings (the "Account" screen; opens when nothing is configured). Sign-in/out, repo + saved-repo picker, BYO-app entry, "work offline". |
+| `Screens/HighlightOptionsScreen.cs` | The **Settings** screen for diff highlights: count, distance, per-category show/hide, hex colors, xray, clear-all. |
+| `Screens/ModeChooseScreen.cs` | First-boot Online / Offline chooser. |
+| `Screens/OfflineSetupScreen.cs` | Offline setup (local folder / top folder / author; switch back to Online). |
+| `Screens/ByoAppScreen.cs` | "Use your own GitHub App" (Option 2) — enter your public Client ID only. |
+| `Screens/ManageAccessScreen.cs` | Admin collaborator management. |
+| `Screens/PublishNewScreen.cs` | Step-2 form for "publish as NEW ship" (name / folder / tags). |
+| `Screens/{ConnectRepo,CreateRepo}Screen.cs` | Connect to / create-and-seed a Shipyard repo in-game. |
+| `Screens/TextDiffScreen.cs` | Line-by-line (LCS) CustomData diff window (Ctrl+Shift+D); collapses unchanged runs. |
+| `Screens/DialogScreen.cs` | In-style result/confirm dialog (replaces the stock message box). |
+| `Screens/TerminalScreen.cs` | Animated busy / sign-in overlay. |
+| `Screens/BootScreen.cs` | 80s-style boot sequence shown while the repo fetches on open. |
+| `Screens/InfoScreen.cs` | Scrollable multi-line text view (help, PR details). |
+| `Screens/Frame.cs` | Shared chrome: divider, classification footer, button/label constructors. |
+| `Screens/Brand.cs` | Lore skin: faction strings, slogans, amber palette, logo path. |
+| `Patches/BlueprintScreenPatch.cs` | Harmony postfix that injects the "Shipyard" button into F10. |
+| `Tools/Publicize.cs` | Supplies the `IgnoresAccessChecksTo` trigger so Pulsar's from-source build publicizes `Sandbox.Game`. |
+| `assets/logo.png` | Mandate crest (shown on the auth screen). Shipped as a plugin asset (`<AssetFolder>`), loaded via `Plugin.LoadAssets`. |
 
 ---
 
@@ -156,18 +163,16 @@ filename. After deploying, **restart SE via Pulsar** and enable "Shipyard" under
 
 ---
 
-## Linux (Proton)
+## Linux
 
-SE1 is Windows-only; Linux players run the game + Pulsar through **Proton/Wine**, so the plugin
-executes in the Windows runtime under Wine and works largely unchanged.
+Pulsar has Linux-capable variants, so Shipyard should run on Linux largely unchanged. **This probably
+works but has not been fully tested by the author** — please report any issues. Notes:
 
 - **Offline mode is the zero-friction path.** Local git, no account, no browser, no token.
-- **Online sign-in** works via device flow; if the browser doesn't auto-open under Wine, use the
-  URL + one-time code shown on the sign-in screen (open `github.com/login/device` yourself).
-- **Token storage** uses Windows DPAPI; under Wine it persists within your Proton prefix. If encrypted
-  persistence ever fails it won't crash — you stay signed in for the session and re-auth next launch.
-- The native `git2-*.dll` (offline engine) is a Windows DLL and loads fine under Wine.
-- Please report any issues, Linux support is intended but not production-ready/tested for 1.0
+- **Online sign-in** works via device flow; if the browser doesn't auto-open, use the URL + one-time
+  code shown on the sign-in screen (open `github.com/login/device` yourself).
+- **Token storage** uses Windows DPAPI; where that isn't available it won't crash — you stay signed in
+  for the session and re-auth next launch.
 
 ---
 

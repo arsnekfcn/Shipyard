@@ -121,7 +121,7 @@ namespace ShipyardPlugin
                             File.Copy(bpPath, Path.Combine(stage, "bp.sbc"), true);
                             if (File.Exists(thumb)) File.Copy(thumb, Path.Combine(stage, "thumb.png"), true);
                         }
-                        catch (Exception ex) { try { Directory.Delete(stage, true); } catch { } Plugin.Log("workshop stage failed: " + ex.Message); ShipyardRunner.ShowMessage("Couldn't prepare the upload: " + ex.Message); return; }
+                        catch (Exception ex) { try { Directory.Delete(stage, true); } catch { /* temp staging dir may not exist / be locked; harmless, real error logged next */ } Plugin.Log("workshop stage failed: " + ex.Message); ShipyardRunner.ShowMessage("Couldn't prepare the upload: " + ex.Message); return; }
                         // The game shows its own progress overlay + result box.
                         // Unlisted by default: visible by link only, never in Workshop browse/search.
                         try
@@ -133,7 +133,7 @@ namespace ShipyardPlugin
                             {
                                 ShipyardRunner.InvokeOnMain(() =>
                                 {
-                                    try { Directory.Delete(stage, true); } catch { }   // remove the temp upload staging dir
+                                    try { Directory.Delete(stage, true); } catch { }   // best-effort: remove the temp upload staging dir (a leftover is harmless if locked)
                                     if (success && publishedItems != null && publishedItems.Length > 0)
                                     {
                                         ulong id = publishedItems[0].Id;
@@ -171,7 +171,7 @@ namespace ShipyardPlugin
                         {
                             // Synchronous failure before the callback fires: clean up the staging dir
                             // ourselves, since the callback (which normally deletes it) won't run.
-                            try { Directory.Delete(stage, true); } catch { }
+                            try { Directory.Delete(stage, true); } catch { /* best-effort; a leftover temp dir is harmless */ }
                             Plugin.Log("workshop publish failed: " + ex.Message);
                             ShipyardRunner.ShowMessage("Workshop publish failed: " + ex.Message);
                         }

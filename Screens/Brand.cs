@@ -75,15 +75,18 @@ namespace ShipyardPlugin
             Convert.ToInt32(hex.Substring(4, 2), 16) / 255f);
         public static readonly Vector4 Muted     = new Vector4(0.62f, 0.62f, 0.66f, 1f);
 
+        // The GUI loads textures by path. Prefer Pulsar's asset folder (set via Plugin.LoadAssets); fall back
+        // to next-to-the-DLL, where a prebuild ships logo.png. Returns null if not found (GUI handles that).
         public static string LogoPath()
         {
             try
             {
-                string dir = Plugin.PluginDir;
-                string a = string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, "logo.png");
-                string b = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Shipyard", "logo.png");
-                if (a != null && File.Exists(a)) return a;
-                if (File.Exists(b)) return b;
+                foreach (var dir in new[] { Plugin.AssetDir, Plugin.PluginDir })
+                {
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    string p = Path.Combine(dir, "logo.png");
+                    if (File.Exists(p)) return p;
+                }
             }
             catch (Exception ex) { Plugin.Log("LogoPath failed: " + ex.Message); }
             return null;
