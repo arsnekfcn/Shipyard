@@ -1784,7 +1784,13 @@ namespace ShipyardPlugin
                         new NewCommit("checkout: " + cs + " by @" + login, mainCommit.Tree.Sha, mainRef.Object.Sha)).GetAwaiter().GetResult();
                     client.Git.Reference.Create(Auth.RepoOwner, Auth.RepoName,
                         new NewReference("refs/heads/" + CheckoutBranch(cs), commit.Sha)).GetAwaiter().GetResult();
-                    byte[] bytes = GetBlueprintFileBytes(client, CheckoutBranch(cs), cs, "bp.sbc");
+                    // Read the WIP bytes from main's head COMMIT (which this checkout branch was just forked
+                    // from, so the tree/bp.sbc is identical), NOT the just-created checkout ref. GitHub ref
+                    // propagation lags, so reading through refs/heads/checkout/... right after creating it can
+                    // 404 -> null bytes -> a spurious "Couldn't parse the blueprint" on first checkout (which
+                    // closing + re-checkout used to mask). Reading by commit SHA is content-addressed -> no lag.
+                    var tree = GetCommitTree(client, mainRef.Object.Sha);
+                    byte[] bytes = tree != null ? TreeFileBytes(client, tree, RootSlash + cs + "/bp.sbc") : null;
                     Plugin.Log("checked out " + cs + " by " + login);
                     return new object[] { "new", ParseGrids(bytes, cs), commit.Sha };
                 },
