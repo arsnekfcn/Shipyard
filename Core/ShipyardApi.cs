@@ -956,7 +956,7 @@ namespace ShipyardPlugin
         // Publish (re-record) and DeleteShip (remove) so all three agree on the format and exact-path anchor.
         private static List<string> CodeownersWithout(string co, string rel)
         {
-            var rx = new Regex(@"^\s*/" + Regex.Escape(rel) + @"/\s+@");
+            var rx = new Regex(@"^\s*/" + Regex.Escape(rel) + @"/?\s+@");   // trailing slash tolerant (matches the readers)
             return (co ?? "").Replace("\r\n", "\n").Split('\n').Where(l => !rx.IsMatch(l)).ToList();
         }
 
@@ -1050,7 +1050,7 @@ namespace ShipyardPlugin
                     string co = "";
                     try { var existing = coGetTask.GetAwaiter().GetResult(); if (existing.Count > 0) co = existing[0].Content ?? ""; }
                     catch (NotFoundException) { /* no CODEOWNERS yet */ }
-                    var ownerMatch = Regex.Match(co, @"(?m)^\s*/" + Regex.Escape(rel) + @"/\s+@(\S+)");
+                    var ownerMatch = Regex.Match(co, @"(?m)^\s*/" + Regex.Escape(rel) + @"/?\s+@(\S+)");   // trailing slash tolerant
                     string recordedOwner = ownerMatch.Success ? ownerMatch.Groups[1].Value : null;
                     if (recordedOwner != null && !string.Equals(recordedOwner, author, StringComparison.OrdinalIgnoreCase))
                         Plugin.Log("CODEOWNERS untouched: " + rel + " is owned by @" + recordedOwner);
@@ -1631,6 +1631,9 @@ namespace ShipyardPlugin
             if (MyAPIGateway.Session == null) { ShipyardRunner.ShowMessage("Diff requires being in a world."); return; }
             IMyCubeGrid grid;
             if (!TryGetLookedAtGrid(out grid)) { ShipyardRunner.ShowMessage("Look at a ship first, then run /sy diff."); return; }
+            // read gate: the diff overlay exposes the grid's internals, so block enemy grids (HighlightCurrent
+            // re-checks at the chokepoint)
+            if (!PlayerCanReadGrid(grid)) { ShipyardRunner.ShowMessage(NoBlueprintAccessMsg); return; }
             string q = !string.IsNullOrWhiteSpace(query) ? query : (grid.CustomName ?? grid.DisplayName);
             ResolveShipThen(q, s => HighlightCurrent(s, grid));
         }
@@ -1865,6 +1868,7 @@ namespace ShipyardPlugin
         // MAIN THREAD (the CopyGroup capture touches live entities), then the upload runs in background.
         public static void CommitGrid(ShipEntry ship, IMyCubeGrid grid)
         {
+            if (!PlayerCanBlueprint(grid)) { ShipyardRunner.ShowMessage(NoBlueprintAccessMsg); return; }
             string cs = ship.CategoryShip;
             MyObjectBuilder_CubeGrid[] grids;
             try
@@ -1888,6 +1892,7 @@ namespace ShipyardPlugin
         // (touches live entities); serialize + scrub + git commit run in the background like online.
         public static void LocalCommitGrid(string cs, IMyCubeGrid grid)
         {
+            if (!PlayerCanBlueprint(grid)) { ShipyardRunner.ShowMessage(NoBlueprintAccessMsg); return; }
             MyObjectBuilder_CubeGrid[] grids;
             try
             {
@@ -2262,6 +2267,10 @@ namespace ShipyardPlugin
                     try
                     {
                         if (proj == null || proj.Closed) { ShipyardRunner.ShowMessage("That projector is gone."); return; }
+                        // can't load into a projector you can't access in vanilla; gate on its share-aware check
+                        long meId = MyAPIGateway.Session?.Player?.IdentityId ?? 0;
+                        if (!(proj is IMyTerminalBlock t) || !t.HasPlayerAccess(meId, VRage.Game.MyRelationsBetweenPlayerAndBlock.NoOwnership))
+                        { ShipyardRunner.ShowMessage("You don't have access to that projector."); return; }
                         proj.SetProjectedGrid(grids[0]);
                         ShipyardRunner.ShowResult("Projected '" + categoryShip + "' onto " + (proj.CustomName ?? "the projector") + "." +
                             (grids.Length > 1 ? "\n(multi-grid blueprint: only the primary grid projects)" : ""));
@@ -2294,11 +2303,37 @@ namespace ShipyardPlugin
                 string text = co.Count > 0 ? (co[0].Content ?? "") : "";
                 foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
                 {
-                    var m = Regex.Match(line.Trim(), @"^/(\S+)/\s+@(\S+)");
+                    var m = Regex.Match(line.Trim(), @"^/(\S+?)/?\s+@(\S+)");   // trailing slash tolerant
                     if (m.Success) map[m.Groups[1].Value] = m.Groups[2].Value; // rel -> owner
                 }
             }
             catch (Exception ex) { Plugin.Log("read CODEOWNERS failed: " + ex.Message); }
+            return map;
+        }
+
+        // Strict reader for enforcement (merge/delete): fails loud so callers fail closed. Absent CODEOWNERS
+        // (NotFound) = legitimately unowned; any other read error (incl. present-but-unreadable) throws. gitRef
+        // null = default branch (main); pass a ref/sha to read that revision's proposed registry.
+        private static Dictionary<string, string> ReadCodeownersStrict(GitHubClient client) => ReadCodeownersStrict(client, null);
+        private static Dictionary<string, string> ReadCodeownersStrict(GitHubClient client, string gitRef)
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            IReadOnlyList<RepositoryContent> co;
+            try
+            {
+                co = string.IsNullOrEmpty(gitRef)
+                    ? client.Repository.Content.GetAllContents(Auth.RepoOwner, Auth.RepoName, ".github/CODEOWNERS").GetAwaiter().GetResult()
+                    : client.Repository.Content.GetAllContentsByRef(Auth.RepoOwner, Auth.RepoName, ".github/CODEOWNERS", gitRef).GetAwaiter().GetResult();
+            }
+            catch (NotFoundException) { return map; }   // no CODEOWNERS = genuinely unowned
+            // present but unreadable (empty/null content, e.g. >1MB truncation) is a read failure, not "unowned"
+            if (co.Count == 0 || co[0].Content == null)
+                throw new Exception("CODEOWNERS present but unreadable (empty/truncated response) - refusing to treat as unowned.");
+            foreach (var line in co[0].Content.Replace("\r\n", "\n").Split('\n'))
+            {
+                var m = Regex.Match(line.Trim(), @"^/(\S+?)/?\s+@(\S+)");   // trailing slash tolerant
+                if (m.Success) map[m.Groups[1].Value] = m.Groups[2].Value;
+            }
             return map;
         }
 
@@ -2967,6 +3002,9 @@ namespace ShipyardPlugin
         // Mode B: highlight changes vs main directly on a grid already in the world (no spawn).
         public static void HighlightCurrent(ShipEntry ship, IMyCubeGrid grid)
         {
+            // Read chokepoint: GetObjectBuilder below reads the grid's full layout + CustomData. Both callers
+            // (chat /sy diff and the menu Highlight button) route here, so gating here closes the enemy-grid read.
+            if (!PlayerCanReadGrid(grid)) { ShipyardRunner.ShowMessage(NoBlueprintAccessMsg); return; }
             ShipyardRunner.RunWithBusyThen<Dictionary<string, MyObjectBuilder_CubeBlock>>(
                 "Highlighting changes vs main...",
                 () =>
@@ -3063,6 +3101,43 @@ namespace ShipyardPlugin
             catch (Exception ex) { Plugin.Log("raycast failed: " + ex.Message); }
             return grid != null;
         }
+
+        // Read gate (used by the read-only diff). Reuses the engine's HasAccess: creative, else own/faction/unowned
+        // for every grid in the logical group. This is what blocks reading an enemy grid. Fails closed.
+        public static bool PlayerCanReadGrid(IMyCubeGrid grid)
+        {
+            try
+            {
+                var cube = grid as Sandbox.Game.Entities.MyCubeGrid;
+                if (cube == null) return false;
+                var group = new List<Sandbox.Game.Entities.MyCubeGrid>();
+                Sandbox.Game.Entities.MyCubeGridGroups.Static.GetGroups(GridLinkTypeEnum.Logical).GetGroupNodes(cube, group);
+                if (group.Count == 0) group.Add(cube);
+                return MyClipboardComponent.HasAccess(group, Sandbox.Game.World.MySession.Static.LocalPlayerId);
+            }
+            catch (Exception ex) { Plugin.Log("grid read-access check failed (denying): " + ex.Message); return false; }
+        }
+
+        // Capture gate (CommitGrid/LocalCommitGrid). Capture calls the low-level clipboard CopyGroup, which does
+        // no permission check, so without this you could blueprint an enemy grid you're just looking at. Read gate
+        // plus the no-build safe-zone check vanilla Ctrl+B runs (the read-only diff skips the safe-zone part).
+        public static bool PlayerCanBlueprint(IMyCubeGrid grid)
+        {
+            if (!PlayerCanReadGrid(grid)) return false;
+            try
+            {
+                var cube = grid as Sandbox.Game.Entities.MyCubeGrid;
+                if (cube == null) return false;
+                return Sandbox.Game.Entities.MySessionComponentSafeZones.IsActionAllowed(
+                    cube, VRage.Game.ObjectBuilders.Components.MySafeZoneAction.Building,
+                    Sandbox.Game.World.MySession.Static.LocalCharacterEntityId,
+                    MyAPIGateway.Multiplayer?.MyId ?? 0UL);
+            }
+            catch (Exception ex) { Plugin.Log("blueprint safe-zone check failed (denying): " + ex.Message); return false; }
+        }
+
+        private const string NoBlueprintAccessMsg =
+            "You can only blueprint grids you own (or your faction owns).\nYou don't have build access to that grid.";
 
         // Main-thread: reposition grids ~120m ahead of the camera (new ids) and spawn; returns primary entity.
         // forceStatic pins them in place (good for a diff); pass false to keep them placeable/movable.
@@ -3204,14 +3279,66 @@ namespace ShipyardPlugin
                 var client = Gh();
                 string me = Auth.Login;   // stored at sign-in; fall back to the API only if it's not cached
                 if (string.IsNullOrEmpty(me)) me = client.User.Current().GetAwaiter().GetResult().Login;
-                bool iAmOwner = pr.Owner != null && string.Equals(me, pr.Owner, StringComparison.OrdinalIgnoreCase);
+                // Fetch the head sha fresh and pin the merge to it (below) so GitHub refuses if the head moves
+                // between our checks and the merge. Fail closed if we can't resolve it.
+                string headSha = client.PullRequest.Get(Auth.RepoOwner, Auth.RepoName, pr.Number).GetAwaiter().GetResult().Head?.Sha;
+                if (string.IsNullOrEmpty(headSha))
+                    throw new Exception("Couldn't resolve PR #" + pr.Number + "'s current head commit - try again.");
 
-                if (pr.Owner != null && !iAmOwner && !pr.OwnerApproved)
-                    throw new Exception("Locked: '" + pr.CategoryShip + "' is owned by @" + pr.Owner +
-                                        ".\nIt needs their approval before it can be merged.");
+                // Enforce ownership off the files the PR actually changes (read fresh from main), not the spoofable
+                // branch name: any owned-ship path it touches that someone else owns needs that owner's approval.
+                var owners = ReadCodeownersStrict(client);
+                var prFiles = client.PullRequest.Files(Auth.RepoOwner, Auth.RepoName, pr.Number, new ApiOptions { PageSize = 100 }).GetAwaiter().GetResult();
+                if (prFiles.Count >= 3000)   // GitHub caps the files endpoint here; can't verify past it -> fail closed
+                    throw new Exception("PR #" + pr.Number + " changes too many files to verify ownership safely.\nReview and merge it on GitHub web.");
 
+                var lockedOwners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in prFiles)
+                    foreach (var kv in owners)
+                        if (!string.Equals(kv.Value, me, StringComparison.OrdinalIgnoreCase) &&
+                            f.FileName.StartsWith(kv.Key + "/", StringComparison.OrdinalIgnoreCase))
+                            lockedOwners.Add(kv.Value);
+
+                // Also compare the PR's proposed CODEOWNERS (at the fresh head sha) against main, so reassigning or
+                // removing someone else's ownership line needs their approval. Run it unconditionally - a stale
+                // Files diff could hide a pure-CODEOWNERS edit - and it's a no-op for normal publishes. Reading by
+                // sha (not branch) avoids a fork branch-name collision; unreadable -> lock every other owner.
+                Dictionary<string, string> prOwners = null;
+                try { prOwners = ReadCodeownersStrict(client, headSha); }
+                catch (Exception ex) { Plugin.Log("PR-head CODEOWNERS read failed (locking all owners): " + ex.Message); }
+                foreach (var kv in owners)
+                {
+                    if (string.Equals(kv.Value, me, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (prOwners == null) { lockedOwners.Add(kv.Value); continue; }
+                    string newOwner; prOwners.TryGetValue(kv.Key, out newOwner);
+                    if (!string.Equals(newOwner, kv.Value, StringComparison.OrdinalIgnoreCase)) lockedOwners.Add(kv.Value);
+                }
+
+                if (lockedOwners.Count > 0)
+                {
+                    HashSet<string> approvers;
+                    try
+                    {
+                        var reviews = client.PullRequest.Review.GetAll(Auth.RepoOwner, Auth.RepoName, pr.Number).GetAwaiter().GetResult();
+                        approvers = new HashSet<string>(
+                            reviews.Where(r => r.State.Value == PullRequestReviewState.Approved).Select(r => r.User.Login),
+                            StringComparer.OrdinalIgnoreCase);
+                    }
+                    // Can't confirm approvals -> fail CLOSED (don't merge on an unverifiable approval).
+                    catch (Exception ex)
+                    {
+                        throw new Exception("Couldn't verify owner approval for PR #" + pr.Number +
+                                            " (review read failed): " + ex.Message + "\nTry again in a moment.");
+                    }
+                    var missing = lockedOwners.Where(o => !approvers.Contains(o)).OrderBy(o => o, StringComparer.OrdinalIgnoreCase).ToList();
+                    if (missing.Count > 0)
+                        throw new Exception("Locked: this PR changes ship(s) owned by @" + string.Join(", @", missing) +
+                                            ".\nIt needs their approval before it can be merged.");
+                }
+
+                // pinned to the verified head: GitHub refuses if it advanced after our checks
                 client.PullRequest.Merge(Auth.RepoOwner, Auth.RepoName, pr.Number,
-                    new MergePullRequest { MergeMethod = PullRequestMergeMethod.Merge }).GetAwaiter().GetResult();
+                    new MergePullRequest { MergeMethod = PullRequestMergeMethod.Merge, Sha = headSha }).GetAwaiter().GetResult();
                 if (!string.IsNullOrEmpty(pr.HeadBranch))
                     try { client.Git.Reference.Delete(Auth.RepoOwner, Auth.RepoName, "heads/" + pr.HeadBranch).GetAwaiter().GetResult(); } catch (Exception ex) { Plugin.Log("branch delete failed: " + ex.Message); }
                 Plugin.Log("merged PR #" + pr.Number + " (" + pr.CategoryShip + ")");
@@ -3243,7 +3370,9 @@ namespace ShipyardPlugin
                 var client = Gh();
                 string me = Auth.Login;   // stored at sign-in; fall back to the API only if it's not cached
                 if (string.IsNullOrEmpty(me)) me = client.User.Current().GetAwaiter().GetResult().Login;
-                var owners = ReadCodeowners(client);
+                // Strict (fail-closed) read: deletion writes straight to main, so a transient CODEOWNERS read
+                // error must NOT be treated as "unowned" and let a non-owner delete someone else's ship.
+                var owners = ReadCodeownersStrict(client);
                 string owner = owners.ContainsKey(RootSlash + ship.CategoryShip) ? owners[RootSlash + ship.CategoryShip] : null;
                 if (owner != null && !string.Equals(me, owner, StringComparison.OrdinalIgnoreCase))
                     throw new Exception("Only the owner (@" + owner + ") can delete '" + ship.CategoryShip + "'.");
