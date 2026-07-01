@@ -254,6 +254,14 @@ namespace ShipyardPlugin
             }
         }
 
+        // Pulsar calls this (by reflection) for the plugin's Settings button and the Ctrl+Shift+/ config list.
+        // Opens the account/settings page directly (not the ship browser) - it's the config surface.
+        public void OpenConfigDialog()
+        {
+            try { Sandbox.Graphics.GUI.MyGuiSandbox.AddScreen(new SettingsScreen()); }
+            catch (Exception ex) { Log("OpenConfigDialog failed: " + ex.Message); }
+        }
+
         public void Dispose()
         {
             // Best-effort teardown: log failures (one shot at shutdown, no spam risk) but keep going so one
